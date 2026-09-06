@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc \
+            clang \
+            make \
+            pkg-config \
+            libx11-dev \
+            libxext-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev
+
+      - name: Build dwmterm
+        run: |
+          make clean
+          CC=${{ matrix.compiler }} make CFLAGS="-O2 -Wall -Wextra -pedantic -Werror"
+
+      - name: Run test suite
+        run: |
+          CC=${{ matrix.compiler }} make test
+
+      - name: Test staged installation and uninstallation
+        run: |
+          make install DESTDIR=/tmp/test-install
+          test -f /tmp/test-install/usr/local/bin/dwmterm
+          test -f /tmp/test-install/usr/local/share/applications/dwmterm.desktop
+          test -f /tmp/test-install/usr/local/share/man/man1/dwmterm.1
+          test -f /tmp/test-install/usr/local/share/fonts/TTF/MesloLGSNerdFont-Regular.ttf
+          make uninstall DESTDIR=/tmp/test-install
+          test ! -f /tmp/test-install/usr/local/bin/dwmterm
