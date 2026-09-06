@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DWM-Terminal
+GenericName=Terminal Emulator
+Comment=Ultra-minimal, low-latency CPU-framebuffer terminal for DWM
+Exec=dwmterm
+Icon=dwmterm
+Terminal=false
+Categories=System;TerminalEmulator;
+StartupWMClass=dwmterm

@@ -1,0 +1,115 @@
+.TH DWMTERM 1 "September 2026" "dwmterm 1.0" "User Commands"
+.SH NAME
+dwmterm \- ultra-minimal, low-latency CPU-framebuffer terminal emulator for DWM
+.SH SYNOPSIS
+.B dwmterm
+[\fB\-v\fR|\fB\-\-version\fR]
+[\fB\-h\fR|\fB\-\-help\fR]
+[\fB\-T\fR|\fB\-t\fR \fItitle\fR]
+[\fB\-d\fR|\fB\-\-working\-directory\fR \fIdir\fR]
+[\fB\-e\fR \fIcmd\fR [\fIargs...\fR]]
+.SH DESCRIPTION
+.B dwmterm
+(DWM Terminal) is an ultra-minimal, low-latency terminal emulator written in C99
+for the X Window System. Designed specifically for seamless integration with
+dynamic window managers such as \fBdwm\fR (and \fBdwm-titus\fR),
+.B dwmterm
+delivers sub-millisecond input responsiveness and a resident memory footprint
+under 15 MB RSS.
+.PP
+Instead of complex GPU pipelines,
+.B dwmterm
+renders via MIT-SHM shared memory direct CPU framebuffer blits, eliminating
+render latency and resource bloat. It features bundled Meslo Nerd Font,
+X11 ICCCM/EWMH hints, full DWM window swallowing support, Quickshell ARGB
+status-bar icons, an integrated PTY flight recorder ("time machine"), and
+built-in Fastfetch and Starship prompt theme presets.
+.SH OPTIONS
+.TP
+.B \-d\fR, \fB\-\-working\-directory \fIdir\fR
+Set the initial working directory of the spawned shell or command.
+.TP
+\fB\-e\fR \fIcmd\fR [\fIargs...\fR]
+Execute \fIcmd\fR with the given arguments directly in the pseudo-terminal
+instead of spawning the default user shell. This option must be specified last
+on the command line.
+.TP
+\fB\-T\fR, \fB\-t\fR \fItitle\fR
+Set the initial window title to \fItitle\fR.
+.TP
+\fB\-v\fR, \fB\-\-version\fR
+Print version information and exit.
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print usage instructions and exit.
+.SH KEYBINDINGS
+.TP
+.B F1
+Toggle the Flight Recorder HUD Scrubber ("Time Machine"). When active, use
+.B Left
+and
+.B Right
+arrow keys to step backward and forward through your terminal history,
+.B Home
+to jump to session start, and
+.B End
+to return to the present. Pressing
+.B Escape
+or any input key exits scrubber mode.
+.TP
+.B Ctrl + Plus \fR(\fB=\fR)
+Increase font point size at runtime.
+.TP
+.B Ctrl + Minus \fR(\fB\-\fR)
+Decrease font point size at runtime.
+.TP
+.B Ctrl + 0
+Reset font size to the default (10 pt).
+.TP
+.B Shift + PageUp / Shift + PageDown
+Scroll up and down through the scrollback buffer.
+.TP
+.B Mouse Left Drag
+Highlight text to copy to the PRIMARY and CLIPBOARD selections.
+.TP
+.B Mouse Middle Click
+Paste from the PRIMARY selection.
+.SH DWM INTEGRATION
+.B dwmterm
+sets \fBWM_CLASS\fR to:
+.RS
+.nf
+res_name  = "dwmterm"
+res_class = "Dwmterm"
+.fi
+.RE
+To enable automatic window swallowing in \fBdwm\fR's \fIconfig.h\fR:
+.RS
+.nf
+/* class      instance    title       tags mask     isfloating   isterminal noswallow monitor */
+{ "Dwmterm",  NULL,       NULL,       0,            0,           1,         0,        -1 },
+.fi
+.RE
+.SH SIGNALS
+.TP
+.B SIGUSR1
+Reloads the color palette dynamically from \fI${XDG_CONFIG_HOME}/dwmterm/colors\fR
+(or \fI~/.config/dwmterm/colors\fR) and immediately repaints all active character cells
+and window backgrounds without session interruption.
+.SH ENVIRONMENT
+.TP
+.B DWMTERM_DATADIR
+Overrides the system data directory for fonts and assets.
+.SH FILES
+.TP
+.I ~/.config/dwmterm/colors
+Optional user palette configuration file defining background, foreground, cursor,
+and ANSI colors 0 through 15.
+.TP
+.I /usr/local/share/fonts/TTF/MesloLGSNerdFont-Regular.ttf
+Bundled Meslo Nerd Font installed system-wide via fontconfig.
+.TP
+.I /usr/local/share/dwmterm/fonts/MesloLGSNerdFont-Regular.ttf
+Private fallback copy of Meslo Nerd Font.
+.SH AUTHORS
+Abs and contributors to the Titus DWM project.

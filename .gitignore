@@ -1,0 +1,6 @@
+dwmterm
+miniterm
+test_terminal
+*.o
+*.core
+.DS_Store
