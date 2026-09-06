@@ -179,6 +179,17 @@ static int win_h = 0;
 static uint32_t *pixels = NULL;
 
 static int pty_master = -1;
+
+static inline void pty_write(int fd, const void *buf, size_t count) {
+    if (fd < 0 || !buf || count == 0) return;
+    const char *p = (const char *)buf;
+    while (count > 0) {
+        ssize_t n = write(fd, p, count);
+        if (n <= 0) break;
+        p += n;
+        count -= (size_t)n;
+    }
+}
 static int in_sync_update = 0;
 static uint64_t sync_update_start_us = 0;
 static int app_cursor_keys = 0;
@@ -1079,23 +1090,16 @@ static void handle_csi_internal(Terminal *t, unsigned char final_char, int is_li
                 if (p1 == 6) {
                     char resp[32];
                     int len = snprintf(resp, sizeof(resp), "\x1b[%d;%dR", t->cursor_y + 1, t->cursor_x + 1);
-                    if (len > 0) {
-                        ssize_t w = write(pty_master, resp, (size_t)len);
-                        (void)w;
-                    }
+                    if (len > 0) pty_write(pty_master, resp, (size_t)len);
                 } else if (p1 == 5) {
-                    const char *resp = "\x1b[0n";
-                    ssize_t w = write(pty_master, resp, 4);
-                    (void)w;
+                    pty_write(pty_master, "\x1b[0n", 4);
                 }
             }
             break;
         }
         case 'c': {
             if (is_live && pty_master >= 0 && !t->csi_private && (p1 == 0 || !t->csi_has_param)) {
-                const char *resp = "\x1b[?6c";
-                ssize_t w = write(pty_master, resp, 5);
-                (void)w;
+                pty_write(pty_master, "\x1b[?6c", 5);
             }
             break;
         }
@@ -2831,27 +2835,27 @@ int main(int argc, char *argv[]) {
                 }
 
                 if (ksym == XK_BackSpace || (len == 1 && (unsigned char)kbuf[0] == 0x08)) {
-                    write(pty_master, "\x7f", 1);
+                    pty_write(pty_master, "\x7f", 1);
                 } else if (ksym == XK_Delete) {
-                    write(pty_master, "\x1b[3~", 4);
+                    pty_write(pty_master, "\x1b[3~", 4);
                 } else if (ksym == XK_Insert) {
-                    write(pty_master, "\x1b[2~", 4);
+                    pty_write(pty_master, "\x1b[2~", 4);
                 } else if (ksym == XK_Home) {
-                    write(pty_master, app_cursor_keys ? "\x1bOH" : "\x1b[H", 3);
+                    pty_write(pty_master, app_cursor_keys ? "\x1bOH" : "\x1b[H", 3);
                 } else if (ksym == XK_End) {
-                    write(pty_master, app_cursor_keys ? "\x1bOF" : "\x1b[F", 3);
+                    pty_write(pty_master, app_cursor_keys ? "\x1bOF" : "\x1b[F", 3);
                 } else if (ksym == XK_Page_Up || ksym == XK_Prior) {
-                    write(pty_master, "\x1b[5~", 4);
+                    pty_write(pty_master, "\x1b[5~", 4);
                 } else if (ksym == XK_Page_Down || ksym == XK_Next) {
-                    write(pty_master, "\x1b[6~", 4);
+                    pty_write(pty_master, "\x1b[6~", 4);
                 } else if (len > 0) {
-                    write(pty_master, kbuf, len);
+                    pty_write(pty_master, kbuf, len);
                 } else {
-                    if (ksym == XK_Return) write(pty_master, "\r", 1);
-                    else if (ksym == XK_Up) write(pty_master, app_cursor_keys ? "\x1bOA" : "\x1b[A", 3);
-                    else if (ksym == XK_Down) write(pty_master, app_cursor_keys ? "\x1bOB" : "\x1b[B", 3);
-                    else if (ksym == XK_Right) write(pty_master, app_cursor_keys ? "\x1bOC" : "\x1b[C", 3);
-                    else if (ksym == XK_Left) write(pty_master, app_cursor_keys ? "\x1bOD" : "\x1b[D", 3);
+                    if (ksym == XK_Return) pty_write(pty_master, "\r", 1);
+                    else if (ksym == XK_Up) pty_write(pty_master, app_cursor_keys ? "\x1bOA" : "\x1b[A", 3);
+                    else if (ksym == XK_Down) pty_write(pty_master, app_cursor_keys ? "\x1bOB" : "\x1b[B", 3);
+                    else if (ksym == XK_Right) pty_write(pty_master, app_cursor_keys ? "\x1bOC" : "\x1b[C", 3);
+                    else if (ksym == XK_Left) pty_write(pty_master, app_cursor_keys ? "\x1bOD" : "\x1b[D", 3);
                 }
             } else if (ev.type == ButtonPress) {
                 if (replay_mode) continue;
@@ -2884,7 +2888,7 @@ int main(int argc, char *argv[]) {
                         } else {
                             mlen = 0;
                         }
-                        if (mlen > 0) write(pty_master, mbuf, (size_t)mlen);
+                        if (mlen > 0) pty_write(pty_master, mbuf, (size_t)mlen);
                     }
                     continue;
                 }
@@ -2898,7 +2902,7 @@ int main(int argc, char *argv[]) {
                     XConvertSelection(dpy, XA_PRIMARY, atom_utf8, atom_sel_data, win, CurrentTime);
                 } else if (ev.xbutton.button == Button4) {
                     if (live_term.is_alt_screen) {
-                        write(pty_master, "\x1b[A\x1b[A\x1b[A", 9);
+                        pty_write(pty_master, "\x1b[A\x1b[A\x1b[A", 9);
                     } else {
                         scroll_offset += 3;
                         if (scroll_offset > hist_count) scroll_offset = hist_count;
@@ -2906,7 +2910,7 @@ int main(int argc, char *argv[]) {
                     }
                 } else if (ev.xbutton.button == Button5) {
                     if (live_term.is_alt_screen) {
-                        write(pty_master, "\x1b[B\x1b[B\x1b[B", 9);
+                        pty_write(pty_master, "\x1b[B\x1b[B\x1b[B", 9);
                     } else {
                         scroll_offset -= 3;
                         if (scroll_offset < 0) scroll_offset = 0;
@@ -2942,7 +2946,7 @@ int main(int argc, char *argv[]) {
                     } else {
                         mlen = snprintf(mbuf, sizeof(mbuf), "\x1b[M%c%c%c", 32 + btn, 33 + c, 33 + r);
                     }
-                    if (mlen > 0) write(pty_master, mbuf, (size_t)mlen);
+                    if (mlen > 0) pty_write(pty_master, mbuf, (size_t)mlen);
                     continue;
                 }
 
@@ -2979,7 +2983,7 @@ int main(int argc, char *argv[]) {
                         } else {
                             mlen = snprintf(mbuf, sizeof(mbuf), "\x1b[M%c%c%c", 32 + 3, 33 + c, 33 + r);
                         }
-                        if (mlen > 0) write(pty_master, mbuf, (size_t)mlen);
+                        if (mlen > 0) pty_write(pty_master, mbuf, (size_t)mlen);
                     }
                     continue;
                 }
@@ -3027,9 +3031,9 @@ int main(int argc, char *argv[]) {
                     if (XGetWindowProperty(dpy, win, ev.xselection.property, 0, 65536, True,
                                            AnyPropertyType, &type, &format, &nitems, &bytes_after, &prop) == Success) {
                         if (prop && nitems > 0) {
-                            if (bracketed_paste) write(pty_master, "\x1b[200~", 6);
-                            write(pty_master, prop, nitems);
-                            if (bracketed_paste) write(pty_master, "\x1b[201~", 6);
+                            if (bracketed_paste) pty_write(pty_master, "\x1b[200~", 6);
+                            pty_write(pty_master, prop, nitems);
+                            if (bracketed_paste) pty_write(pty_master, "\x1b[201~", 6);
                         }
                         if (prop) XFree(prop);
                     }
