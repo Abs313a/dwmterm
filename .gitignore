@@ -7,3 +7,4 @@ test_terminal
 dist/
 *.tar.gz
 *.sha256
+DWM_TITUS.md

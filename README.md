@@ -128,8 +128,6 @@ static Key keys[] = {
 };
 ```
 
-*(See [DWM_TITUS.md](DWM_TITUS.md) for full upstream integration steps covering Quickshell, scripts/dwm-terminal, and default applications.)*
-
 ---
 
 ## ⌨️ Keybindings Reference
