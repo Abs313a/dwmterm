@@ -32,15 +32,21 @@
 #define DATADIR "/usr/local/share"
 #endif
 
+#ifndef VERSION
+#define VERSION "0.1"
+#endif
+
 #define DEFAULT_COLS 90
 #define DEFAULT_ROWS 28
-#define PADDING 12
+#define DEFAULT_PADDING 12
+static int padding = DEFAULT_PADDING;
+#define PADDING padding
 #define MAX_HIST_LINES 4096
 
 // Default Arctic Nord Palette
 #define DEFAULT_COLOR_BG      0x002E3440 // Polar Night
 #define DEFAULT_COLOR_FG      0x00ECEFF4 // Snow Storm
-#define DEFAULT_COLOR_CURSOR  0x00ECEFF4 // Snow Storm White
+#define DEFAULT_COLOR_CURSOR  0x00FFFFFF // Fixed White
 #define DEFAULT_COLOR_SEL_BG  0x00434C5E // Polar Night lighter
 #define DEFAULT_COLOR_SEL_FG  0x0088C0D0 // Frost Cyan
 #define DEFAULT_COLOR_HUD_BG  0x0088C0D0 // Frost Cyan (Scrubber HUD)
@@ -67,7 +73,6 @@ static const uint32_t default_ansi_palette[16] = {
 
 static uint32_t color_bg = DEFAULT_COLOR_BG;
 static uint32_t color_fg = DEFAULT_COLOR_FG;
-static uint32_t color_cursor = DEFAULT_COLOR_CURSOR;
 static uint32_t color_sel_bg = DEFAULT_COLOR_SEL_BG;
 static uint32_t color_sel_fg = DEFAULT_COLOR_SEL_FG;
 static uint32_t color_hud_bg = DEFAULT_COLOR_HUD_BG;
@@ -75,7 +80,7 @@ static uint32_t color_hud_fg = DEFAULT_COLOR_HUD_FG;
 
 #define COLOR_BG color_bg
 #define COLOR_FG color_fg
-#define COLOR_CURSOR color_cursor
+#define COLOR_CURSOR 0x00FFFFFF
 #define COLOR_SEL_BG color_sel_bg
 #define COLOR_SEL_FG color_sel_fg
 #define COLOR_HUD_BG color_hud_bg
@@ -171,6 +176,27 @@ static int scroll_offset = 0;
 
 // Font Metrics & Scaling
 static int font_pt = 10;
+static int default_font_pt = 10;
+static char config_font_family[128] = {0};
+static int display_dpi = 96;
+
+static void update_display_dpi(Display *d) {
+    if (!d) return;
+    int screen = DefaultScreen(d);
+    int w_px = DisplayWidth(d, screen);
+    int w_mm = DisplayWidthMM(d, screen);
+    if (w_mm > 0) {
+        int dpi = (int)((w_px * 25.4) / w_mm + 0.5);
+        if (dpi >= 72 && dpi <= 400) {
+            display_dpi = dpi;
+        }
+    }
+}
+
+static inline int pt_to_px(int pt) {
+    int px = (int)((pt * display_dpi) / 72.0 + 0.5);
+    return (px < 6) ? 6 : px;
+}
 static int char_w = 11;
 static int char_h = 24;
 static int ascender_px = 19;
@@ -378,7 +404,7 @@ static void setup_window_icon(Display *d, Window w) {
     const unsigned long C_DOT_Y = 0xFFEBCB8B;
     const unsigned long C_DOT_G = 0xFFA3BE8C;
     const unsigned long C_PROMPT = 0xFF88C0D0;
-    const unsigned long C_CURSOR = 0xFFECEFF4;
+    const unsigned long C_CURSOR = 0xFFFFFFFF;
 
     // 16x16 icon
     data[0] = 16;
@@ -573,7 +599,7 @@ static CachedGlyph *get_glyph(uint32_t cp) {
                                 FT_Face new_face = NULL;
                                 if (FT_New_Face(ft_lib, (const char *)file, f_idx, &new_face) == 0) {
                                     if (FT_IS_SCALABLE(new_face)) {
-                                        FT_Set_Pixel_Sizes(new_face, 0, font_pt);
+                                        FT_Set_Pixel_Sizes(new_face, 0, pt_to_px(font_pt));
                                     } else if (new_face->num_fixed_sizes > 0) {
                                         FT_Select_Size(new_face, 0);
                                     }
@@ -1657,15 +1683,16 @@ static void update_wm_normal_hints(void) {
 }
 
 static void set_font_size(int new_pt) {
-    if (new_pt < 8) new_pt = 8;
-    if (new_pt > 64) new_pt = 64;
+    if (new_pt < 6) new_pt = 6;
+    if (new_pt > 72) new_pt = 72;
     if (new_pt == font_pt) return;
     font_pt = new_pt;
 
-    FT_Set_Pixel_Sizes(ft_face, 0, font_pt);
+    int px = pt_to_px(font_pt);
+    FT_Set_Pixel_Sizes(ft_face, 0, px);
     for (int i = 0; i < num_fallback_faces; i++) {
         if (FT_IS_SCALABLE(fallback_faces[i])) {
-            FT_Set_Pixel_Sizes(fallback_faces[i], 0, font_pt);
+            FT_Set_Pixel_Sizes(fallback_faces[i], 0, px);
         } else if (fallback_faces[i]->num_fixed_sizes > 0) {
             FT_Select_Size(fallback_faces[i], 0);
         }
@@ -1983,6 +2010,7 @@ static char *resolve_font_path(const char *pattern_str, int check_family_match, 
     FcPattern *pat = FcPatternCreate();
     if (!pat) return NULL;
     FcPatternAddString(pat, FC_FAMILY, (const FcChar8 *)pattern_str);
+    FcPatternAddInteger(pat, FC_SPACING, FC_MONO);
     FcConfigSubstitute(NULL, pat, FcMatchPattern);
     FcDefaultSubstitute(pat);
 
@@ -1995,12 +2023,19 @@ static char *resolve_font_path(const char *pattern_str, int check_family_match, 
             family_ok = 0;
             FcChar8 *family = NULL;
             for (int i = 0; FcPatternGetString(match, FC_FAMILY, i, &family) == FcResultMatch; i++) {
-                if (family && (strcasestr((const char *)family, "Meslo") != NULL ||
-                               strcasestr((const char *)family, "JetBrains") != NULL ||
-                               strcasestr((const char *)family, pattern_str) != NULL)) {
+                if (family && (strcasestr((const char *)family, pattern_str) != NULL ||
+                               (strcasestr(pattern_str, "JetBrains") && strcasestr((const char *)family, "JetBrains")) ||
+                               (strcasestr(pattern_str, "Meslo") && strcasestr((const char *)family, "Meslo")) ||
+                               (strcasestr(pattern_str, "Fira") && strcasestr((const char *)family, "Fira")))) {
                     family_ok = 1;
                     break;
                 }
+            }
+        }
+        int spacing = -1;
+        if (FcPatternGetInteger(match, FC_SPACING, 0, &spacing) == FcResultMatch) {
+            if (spacing == FC_PROPORTIONAL) {
+                family_ok = 0;
             }
         }
         if (family_ok) {
@@ -2041,6 +2076,100 @@ static uint32_t parse_hex_color(const char *s, uint32_t default_val) {
         return (uint32_t)strtoul(full, NULL, 16);
     }
     return default_val;
+}
+
+static int resolve_config_path(char *out_path, size_t max_len) {
+    if (!out_path || max_len == 0) return 0;
+    out_path[0] = '\0';
+
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    const char *home = getenv("HOME");
+    char path[PATH_MAX];
+
+    if (xdg && *xdg) {
+        snprintf(path, sizeof(path), "%s/dwmterm/config", xdg);
+        if (access(path, R_OK) == 0) {
+            snprintf(out_path, max_len, "%s", path);
+            return 1;
+        }
+    }
+    if (home && *home) {
+        snprintf(path, sizeof(path), "%s/.config/dwmterm/config", home);
+        if (access(path, R_OK) == 0) {
+            snprintf(out_path, max_len, "%s", path);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void load_config_from_file(const char *config_path) {
+    if (!config_path || !*config_path) return;
+    FILE *f = fopen(config_path, "r");
+    if (!f) return;
+
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == ';' || *p == '\n' || *p == '\r' || *p == '\0') continue;
+
+        char key[64] = {0};
+        char val[128] = {0};
+        char *sep = strpbrk(p, "=:");
+        if (sep) {
+            size_t klen = (size_t)(sep - p);
+            if (klen >= sizeof(key)) klen = sizeof(key) - 1;
+            strncpy(key, p, klen);
+            key[klen] = '\0';
+            char *ke = key + strlen(key) - 1;
+            while (ke >= key && (*ke == ' ' || *ke == '\t')) { *ke = '\0'; ke--; }
+
+            char *v = sep + 1;
+            while (*v == ' ' || *v == '\t') v++;
+            strncpy(val, v, sizeof(val) - 1);
+            char *ve = val + strlen(val) - 1;
+            while (ve >= val && (*ve == ' ' || *ve == '\t' || *ve == '\n' || *ve == '\r')) { *ve = '\0'; ve--; }
+        } else {
+            if (sscanf(p, "%63s %127s", key, val) != 2) continue;
+        }
+
+        // Strip surrounding quotes from val
+        char *clean_val = val;
+        while (*clean_val == '"' || *clean_val == '\'') clean_val++;
+        char *cve = clean_val + strlen(clean_val) - 1;
+        while (cve >= clean_val && (*cve == '"' || *cve == '\'')) { *cve = '\0'; cve--; }
+
+        if (strcasecmp(key, "font_size") == 0 || strcasecmp(key, "fontsize") == 0 || strcasecmp(key, "size") == 0) {
+            int sz = atoi(clean_val);
+            if (sz >= 6 && sz <= 72) {
+                font_pt = sz;
+                default_font_pt = sz;
+            }
+        } else if (strcasecmp(key, "font_family") == 0 || strcasecmp(key, "font") == 0 || strcasecmp(key, "fontfamily") == 0 || strcasecmp(key, "font_name") == 0) {
+            if (clean_val[0]) {
+                strncpy(config_font_family, clean_val, sizeof(config_font_family) - 1);
+                config_font_family[sizeof(config_font_family) - 1] = '\0';
+            }
+        } else if (strcasecmp(key, "cols") == 0 || strcasecmp(key, "columns") == 0) {
+            int c = atoi(clean_val);
+            if (c >= 20 && c <= 500) cols = c;
+        } else if (strcasecmp(key, "rows") == 0 || strcasecmp(key, "lines") == 0) {
+            int r = atoi(clean_val);
+            if (r >= 4 && r <= 200) rows = r;
+        } else if (strcasecmp(key, "padding") == 0 || strcasecmp(key, "pad") == 0) {
+            int p = atoi(clean_val);
+            if (p >= 0 && p <= 100) padding = p;
+        }
+    }
+    fclose(f);
+}
+
+static void load_config(void) {
+    char cfg_path[PATH_MAX] = {0};
+    if (resolve_config_path(cfg_path, sizeof(cfg_path))) {
+        load_config_from_file(cfg_path);
+    }
 }
 
 static char active_theme_path[PATH_MAX] = {0};
@@ -2125,7 +2254,6 @@ static void load_theme_colors_from_file(const char *custom_path, int initial) {
     memcpy(ansi_palette, default_ansi_palette, sizeof(ansi_palette));
     color_bg = DEFAULT_COLOR_BG;
     color_fg = DEFAULT_COLOR_FG;
-    color_cursor = DEFAULT_COLOR_CURSOR;
     color_sel_bg = DEFAULT_COLOR_SEL_BG;
     color_sel_fg = DEFAULT_COLOR_SEL_FG;
     color_hud_bg = DEFAULT_COLOR_HUD_BG;
@@ -2274,9 +2402,6 @@ static void load_theme_colors_from_file(const char *custom_path, int initial) {
         } else if (strcasecmp(key, "foreground") == 0 || strcasecmp(key, "fg") == 0 || strcasecmp(key, "term_fg") == 0) {
             color_fg = parse_hex_color(clean_val, color_fg);
             ansi_palette[7] = color_fg;
-        } else if (strcasecmp(key, "cursor") == 0 || strcasecmp(key, "cursor-color") == 0 || strcasecmp(key, "cursor_color") == 0 ||
-                   strcasecmp(key, "accent") == 0 || strcasecmp(key, "term_cursor") == 0) {
-            color_cursor = parse_hex_color(clean_val, color_cursor);
         } else if (strcasecmp(key, "selection") == 0 || strcasecmp(key, "selection_bg") == 0 ||
                    strcasecmp(key, "selection-background") == 0 || strcasecmp(key, "sel_bg") == 0) {
             color_sel_bg = parse_hex_color(clean_val, color_sel_bg);
@@ -2405,7 +2530,7 @@ static void configure_child_env(void) {
     setenv("TERM", "xterm-256color", 1);
     setenv("COLORTERM", "truecolor", 1);
     setenv("TERM_PROGRAM", "dwmterm", 0);
-    setenv("TERM_PROGRAM_VERSION", "1.0", 0);
+    setenv("TERM_PROGRAM_VERSION", VERSION, 0);
 #ifdef DATADIR
     setenv("DWMTERM_DATADIR", DATADIR, 0);
 #endif
@@ -2416,6 +2541,8 @@ int main(int argc, char *argv[]) {
     const char *opt_title = NULL;
     const char *opt_dir = NULL;
     char **cmd_argv = NULL;
+
+    load_config();
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-e") == 0) {
@@ -2439,8 +2566,46 @@ int main(int argc, char *argv[]) {
             opt_dir = argv[++i];
         } else if (strncmp(argv[i], "--working-directory=", 20) == 0) {
             opt_dir = argv[i] + 20;
+        } else if (strcmp(argv[i], "-s") == 0 || strcmp(argv[i], "--font-size") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "dwmterm: %s requires an argument\n", argv[i]);
+                return 1;
+            }
+            int sz = atoi(argv[++i]);
+            if (sz >= 6 && sz <= 72) {
+                font_pt = sz;
+                default_font_pt = sz;
+            }
+        } else if (strncmp(argv[i], "--font-size=", 12) == 0) {
+            int sz = atoi(argv[i] + 12);
+            if (sz >= 6 && sz <= 72) {
+                font_pt = sz;
+                default_font_pt = sz;
+            }
+        } else if (strcmp(argv[i], "-f") == 0 || strcmp(argv[i], "--font") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "dwmterm: %s requires an argument\n", argv[i]);
+                return 1;
+            }
+            const char *farg = argv[++i];
+            strncpy(config_font_family, farg, sizeof(config_font_family) - 1);
+            config_font_family[sizeof(config_font_family) - 1] = '\0';
+        } else if (strncmp(argv[i], "--font=", 7) == 0) {
+            const char *farg = argv[i] + 7;
+            strncpy(config_font_family, farg, sizeof(config_font_family) - 1);
+            config_font_family[sizeof(config_font_family) - 1] = '\0';
+        } else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--padding") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "dwmterm: %s requires an argument\n", argv[i]);
+                return 1;
+            }
+            int p = atoi(argv[++i]);
+            if (p >= 0 && p <= 100) padding = p;
+        } else if (strncmp(argv[i], "--padding=", 10) == 0) {
+            int p = atoi(argv[i] + 10);
+            if (p >= 0 && p <= 100) padding = p;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-            printf("dwmterm 1.0\n");
+            printf("dwmterm %s\n", VERSION);
             return 0;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             printf("Usage: dwmterm [options] [-e <cmd> [args...]]\n\n"
@@ -2448,6 +2613,9 @@ int main(int argc, char *argv[]) {
                    "  -e <cmd> [args...]             Execute command with arguments instead of shell\n"
                    "  -T, -t <title>                 Override initial window title\n"
                    "  -d, --working-directory <dir>  Set starting working directory\n"
+                   "  -s, --font-size <pt>           Set font size in points (6..72, default: 10)\n"
+                   "  -f, --font <family>            Set font family (e.g. 'MesloLGS Nerd Font')\n"
+                   "  -p, --padding <px>             Set internal window padding in pixels (default: 12)\n"
                    "  -v, --version                  Display version information and exit\n"
                    "  -h, --help                     Display this help message and exit\n");
             return 0;
@@ -2479,6 +2647,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Cannot open X display\n");
         return 1;
     }
+    update_display_dpi(dpy);
 
     if (FT_Init_FreeType(&ft_lib)) {
         fprintf(stderr, "Failed to initialize FreeType\n");
@@ -2495,75 +2664,89 @@ int main(int argc, char *argv[]) {
 
     int face_idx = 0;
     char *font_file = NULL;
+    ft_face = NULL;
 
-    // 1. Check bundled Meslo Nerd Font relative to executable, DATADIR, or cwd
-    char exe_buf[1024];
-    ssize_t elen = readlink("/proc/self/exe", exe_buf, sizeof(exe_buf) - 1);
-    if (elen > 0) {
-        exe_buf[elen] = '\0';
-        char *slash = strrchr(exe_buf, '/');
-        if (slash) {
-            *slash = '\0';
-            char fpath[1024];
-            if (snprintf(fpath, sizeof(fpath), "%s/fonts/MesloLGSNerdFont-Regular.ttf", exe_buf) < (int)sizeof(fpath) && access(fpath, R_OK) == 0) {
-                font_file = strdup(fpath);
-            } else if (snprintf(fpath, sizeof(fpath), "%s/../share/dwmterm/fonts/MesloLGSNerdFont-Regular.ttf", exe_buf) < (int)sizeof(fpath) && access(fpath, R_OK) == 0) {
-                font_file = strdup(fpath);
-            }
+    // 0. Check custom font family if configured
+    if (config_font_family[0]) {
+        font_file = resolve_font_path(config_font_family, 1, &face_idx);
+        if (font_file && FT_New_Face(ft_lib, font_file, face_idx, &ft_face) == 0) {
+            // Successfully loaded custom font
+        } else {
+            if (font_file) { free(font_file); font_file = NULL; }
+            fprintf(stderr, "dwmterm: warning: could not load requested font '%s', falling back to defaults\n", config_font_family);
         }
     }
-    if (!font_file) {
-        const char *sys_paths[] = {
+
+    if (!ft_face) {
+        // 1. Check bundled Meslo Nerd Font relative to executable, DATADIR, or cwd
+        char exe_buf[1024];
+        ssize_t elen = readlink("/proc/self/exe", exe_buf, sizeof(exe_buf) - 1);
+        if (elen > 0) {
+            exe_buf[elen] = '\0';
+            char *slash = strrchr(exe_buf, '/');
+            if (slash) {
+                *slash = '\0';
+                char fpath[1024];
+                if (snprintf(fpath, sizeof(fpath), "%s/fonts/MesloLGSNerdFont-Regular.ttf", exe_buf) < (int)sizeof(fpath) && access(fpath, R_OK) == 0) {
+                    font_file = strdup(fpath);
+                } else if (snprintf(fpath, sizeof(fpath), "%s/../share/dwmterm/fonts/MesloLGSNerdFont-Regular.ttf", exe_buf) < (int)sizeof(fpath) && access(fpath, R_OK) == 0) {
+                    font_file = strdup(fpath);
+                }
+            }
+        }
+        if (!font_file) {
+            const char *sys_paths[] = {
 #ifdef DATADIR
-            DATADIR "/dwmterm/fonts/MesloLGSNerdFont-Regular.ttf",
+                DATADIR "/dwmterm/fonts/MesloLGSNerdFont-Regular.ttf",
 #endif
-            "/usr/local/share/dwmterm/fonts/MesloLGSNerdFont-Regular.ttf",
-            "/usr/share/dwmterm/fonts/MesloLGSNerdFont-Regular.ttf",
-            "fonts/MesloLGSNerdFont-Regular.ttf",
-            "./fonts/MesloLGSNerdFont-Regular.ttf",
-            NULL
-        };
-        for (int i = 0; sys_paths[i]; i++) {
-            if (access(sys_paths[i], R_OK) == 0) {
-                font_file = strdup(sys_paths[i]);
-                break;
+                "/usr/local/share/dwmterm/fonts/MesloLGSNerdFont-Regular.ttf",
+                "/usr/share/dwmterm/fonts/MesloLGSNerdFont-Regular.ttf",
+                "fonts/MesloLGSNerdFont-Regular.ttf",
+                "./fonts/MesloLGSNerdFont-Regular.ttf",
+                NULL
+            };
+            for (int i = 0; sys_paths[i]; i++) {
+                if (access(sys_paths[i], R_OK) == 0) {
+                    font_file = strdup(sys_paths[i]);
+                    break;
+                }
             }
         }
-    }
 
-    // 2. Fall back to Fontconfig lookups (Meslo -> JetBrainsMono -> Nerd Font -> monospace)
-    if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
-        if (font_file) { free(font_file); font_file = NULL; }
-        font_file = resolve_font_path("MesloLGS Nerd Font", 1, &face_idx);
+        // 2. Fall back to Fontconfig lookups (Meslo -> JetBrainsMono -> Nerd Font -> monospace)
         if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
             if (font_file) { free(font_file); font_file = NULL; }
-            font_file = resolve_font_path("Meslo Nerd Font", 1, &face_idx);
+            font_file = resolve_font_path("MesloLGS Nerd Font", 1, &face_idx);
             if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
                 if (font_file) { free(font_file); font_file = NULL; }
-                font_file = resolve_font_path("JetBrainsMono Nerd Font", 1, &face_idx);
+                font_file = resolve_font_path("Meslo Nerd Font", 1, &face_idx);
                 if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
                     if (font_file) { free(font_file); font_file = NULL; }
-                    font_file = resolve_font_path("Nerd Font", 0, &face_idx);
+                    font_file = resolve_font_path("JetBrainsMono Nerd Font", 1, &face_idx);
                     if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
                         if (font_file) { free(font_file); font_file = NULL; }
-                        font_file = resolve_font_path("monospace", 0, &face_idx);
+                        font_file = resolve_font_path("Nerd Font", 0, &face_idx);
                         if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
-                            fprintf(stderr, "Could not load Meslo Nerd Font or fallback monospace font\n");
-                            if (font_file) free(font_file);
-                            FcFini();
-                            FT_Done_FreeType(ft_lib);
-                            XCloseDisplay(dpy);
-                            return 1;
+                            if (font_file) { free(font_file); font_file = NULL; }
+                            font_file = resolve_font_path("monospace", 0, &face_idx);
+                            if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
+                                fprintf(stderr, "Could not load Meslo Nerd Font or fallback monospace font\n");
+                                if (font_file) free(font_file);
+                                FcFini();
+                                FT_Done_FreeType(ft_lib);
+                                XCloseDisplay(dpy);
+                                return 1;
+                            }
                         }
                     }
                 }
             }
         }
     }
-    free(font_file);
+    if (font_file) free(font_file);
     FcFini();
 
-    FT_Set_Pixel_Sizes(ft_face, 0, font_pt);
+    FT_Set_Pixel_Sizes(ft_face, 0, pt_to_px(font_pt));
     FT_Load_Char(ft_face, 'M', FT_LOAD_RENDER);
 
     char_w = ft_face->glyph->advance.x >> 6;
@@ -2790,7 +2973,7 @@ int main(int argc, char *argv[]) {
                         set_font_size(font_pt - 2);
                         continue;
                     } else if (ksym == XK_0 || ksym == XK_KP_0) {
-                        set_font_size(18);
+                        set_font_size(default_font_pt);
                         continue;
                     } else if ((ev.xkey.state & ShiftMask) && (ksym == XK_C || ksym == XK_c)) {
                         copy_selection_text();

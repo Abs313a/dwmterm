@@ -4,3 +4,6 @@ test_terminal
 *.o
 *.core
 .DS_Store
+dist/
+*.tar.gz
+*.sha256

@@ -37,6 +37,7 @@ Modern terminal emulators (Alacritty, Kitty, WezTerm, Ghostty) rely on heavy GPU
 * **🎨 Quickshell & DWM Bar Integration**: Sets compliant EWMH properties (`_NET_WM_PID`, UTF-8 `_NET_WM_NAME`) and embeds 32-bit ARGB window icons (`_NET_WM_ICON` at 16×16 and 32×32) for native taskbars and Quickshell widgets.
 * **⏱️ Interactive PTY Flight Recorder ("Time Machine")**: Press `F1` at any time to freeze terminal state and scrub backwards through your session history with an on-screen HUD scrubber, or export your session to asciinema v2 `.cast` format.
 * **🔡 Bundled Meslo Nerd Font**: Ships with official `MesloLGS Nerd Font` and automatically installs system-wide to `/usr/local/share/fonts/TTF/` with fontconfig cache refresh, making it instantly usable by DWM, Quickshell, and dmenu.
+* **📐 DPI-Aware Typography**: Dynamic display DPI detection ensures true typographical point scaling, with strict monospace fallback filtering.
 * **🎨 Dynamic Palette & Theming**: Built-in Arctic Nord palette with runtime reload support via `${XDG_CONFIG_HOME:-~/.config}/dwmterm/colors` and `SIGUSR1`, integrating seamlessly with `dwm-titus`'s `themes.toml` and `theme-apply.sh`.
 * **🖥️ Alternate Screen & ANSI Truecolor**: Full 24-bit RGB truecolor support, `DECSET 1049/1047/47` alternate buffer swapping for `vim`, `htop`, `tmux`, and smooth mouse wheel translation.
 * **📋 X11 Selection & OSC 52**: Click-and-drag mouse highlighting, PRIMARY middle-click paste, and bidirectional OSC 52 clipboard synchronization.
@@ -141,7 +142,7 @@ static Key keys[] = {
 | `Escape` / Any key | Exit scrubber mode and return to interactive prompt |
 | `Ctrl` + `+` (or `=`) | Increase font size by 2pt |
 | `Ctrl` + `-` | Decrease font size by 2pt |
-| `Ctrl` + `0` | Reset font size to default (10pt) |
+| `Ctrl` + `0` | Reset font size to default configured size |
 | `Shift` + `PageUp` | Scroll up in terminal history |
 | `Shift` + `PageDown` | Scroll down in terminal history |
 | `Mouse Left Drag` | Highlight text to copy (PRIMARY & CLIPBOARD) |
@@ -158,6 +159,9 @@ Options:
   -e <cmd> [args...]             Execute command with arguments instead of shell
   -T, -t <title>                 Override initial window title
   -d, --working-directory <dir>  Set starting working directory
+  -s, --font-size <pt>           Set initial font size in points (6-72)
+  -f, --font <family>            Set font family name
+  -p, --padding <px>             Set internal window padding in pixels (0-100)
   -v, --version                  Display version information and exit
   -h, --help                     Display this help message and exit
 ```
@@ -179,15 +183,52 @@ dwmterm
 
 ---
 
+## ⚙️ Configuration
+
+`dwmterm` supports persistent user preferences in `${XDG_CONFIG_HOME:-~/.config}/dwmterm/config`:
+
+```ini
+# ~/.config/dwmterm/config
+
+# Typography
+font_size = 10
+font_family = MesloLGS Nerd Font
+
+# Window Padding (internal margin in pixels)
+padding = 12
+
+# Window Geometry (columns x rows)
+# cols = 90
+# rows = 28
+```
+
+### Settings Reference
+* `font_size` (`-s, --font-size <pt>`): Font size in points (6–72), scaled automatically by display DPI.
+* `font_family` (`-f, --font <family>`): Font family name with strict monospace fallback matching.
+* `padding` (`-p, --padding <px>`): Internal window border margin in pixels (0–100, default: 12).
+* `cols` / `rows`: Initial terminal character grid dimensions (columns × rows).
+
+### CLI Overrides
+```bash
+dwmterm -s 12                         # Launch with 12pt font size
+dwmterm -f "JetBrainsMono Nerd Font"  # Launch with custom font
+dwmterm -p 16                         # Launch with 16px internal padding
+```
+
+---
+
 ## 🎨 Theme & Palette Customization
 
-`dwmterm` defaults to the Arctic Nord 16-color palette out-of-the-box. To customize colors or integrate with external theme managers (such as `dwm-titus`'s `theme-apply.sh`), define your palette in `${XDG_CONFIG_HOME:-~/.config}/dwmterm/colors`:
+`dwmterm` defaults to the Arctic Nord 16-color palette with a fixed white cursor out-of-the-box. It automatically detects and hot-reloads active desktop themes (such as Omarchy or `dwm-titus`).
+
+To force a static color palette override, define your palette in `${XDG_CONFIG_HOME:-~/.config}/dwmterm/colors` (a starter template is available in `colors.example`):
 
 ```ini
 # ~/.config/dwmterm/colors
 background  = #2E3440
 foreground  = #ECEFF4
-cursor      = #88C0D0
+selection   = #434C5E
+selection_fg = #88C0D0
 
 color0  = #3B4252
 color1  = #BF616A

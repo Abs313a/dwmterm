@@ -342,7 +342,7 @@ static void test_theme_color_parsing(void) {
 
     assert(color_bg == 0x282A36);
     assert(color_fg == 0xF8F8F2);
-    assert(color_cursor == 0xBD93F9);
+    assert(COLOR_CURSOR == 0x00FFFFFF);
     assert(ansi_palette[0] == 0x21222C);
     assert(ansi_palette[1] == 0xFF5555);
     assert(ansi_palette[15] == 0xFFFFFF);
@@ -351,7 +351,7 @@ static void test_theme_color_parsing(void) {
     load_theme_colors_from_file(NULL, 1);
     assert(color_bg == DEFAULT_COLOR_BG);
     assert(color_fg == DEFAULT_COLOR_FG);
-    assert(color_cursor == DEFAULT_COLOR_CURSOR);
+    assert(COLOR_CURSOR == DEFAULT_COLOR_CURSOR);
     assert(ansi_palette[0] == default_ansi_palette[0]);
 
     unlink(tmp_file);
@@ -392,7 +392,7 @@ static void test_omarchy_colors_toml_parsing(void) {
 
     assert(color_bg == 0x101315);
     assert(color_fg == 0xcacccc);
-    assert(color_cursor == 0x798186);
+    assert(COLOR_CURSOR == 0x00FFFFFF);
     assert(color_sel_bg == 0x343d41);
     assert(ansi_palette[0] == 0x101315);
     assert(ansi_palette[1] == 0x565d60);
@@ -439,7 +439,7 @@ static void test_ghostty_conf_parsing(void) {
 
     assert(color_bg == 0x101315);
     assert(color_fg == 0xcacccc);
-    assert(color_cursor == 0xa5aeb4);
+    assert(COLOR_CURSOR == 0x00FFFFFF);
     assert(color_sel_bg == 0x343d41);
     assert(color_sel_fg == 0xa5aeb4);
     assert(ansi_palette[0] == 0x101315);
@@ -480,7 +480,7 @@ static void test_titus_themes_toml_parsing(void) {
 
     assert(color_bg == 0x2e3440);
     assert(color_fg == 0xd8dee9);
-    assert(color_cursor == 0x81a1c1);
+    assert(COLOR_CURSOR == 0x00FFFFFF);
     assert(ansi_palette[0] == 0x3b4252);
     assert(ansi_palette[1] == 0xbf616a);
     assert(ansi_palette[15] == 0xeceff4);
@@ -561,6 +561,51 @@ static void test_theme_discovery_cascade(void) {
     else unsetenv("XDG_CONFIG_HOME");
     if (orig_home[0]) setenv("HOME", orig_home, 1);
 
+    TEST_PASS();
+}
+
+static void test_config_file_parsing(void) {
+    tests_run++;
+
+    char tmp_file[] = "/tmp/dwmterm_config_test_XXXXXX";
+    int fd = mkstemp(tmp_file);
+    assert(fd >= 0);
+    FILE *f = fdopen(fd, "w");
+    assert(f != NULL);
+
+    fprintf(f, "# Test configuration file\n");
+    fprintf(f, "font_size = 14\n");
+    fprintf(f, "font_family = \"JetBrainsMono Nerd Font\"\n");
+    fprintf(f, "cols = 100\n");
+    fprintf(f, "rows = 35\n");
+    fprintf(f, "padding = 16\n");
+    fclose(f);
+
+    font_pt = 10;
+    default_font_pt = 10;
+    config_font_family[0] = '\0';
+    cols = DEFAULT_COLS;
+    rows = DEFAULT_ROWS;
+    padding = DEFAULT_PADDING;
+
+    load_config_from_file(tmp_file);
+
+    assert(font_pt == 14);
+    assert(default_font_pt == 14);
+    assert(strcmp(config_font_family, "JetBrainsMono Nerd Font") == 0);
+    assert(cols == 100);
+    assert(rows == 35);
+    assert(padding == 16);
+
+    // Reset back to defaults
+    font_pt = 10;
+    default_font_pt = 10;
+    config_font_family[0] = '\0';
+    cols = DEFAULT_COLS;
+    rows = DEFAULT_ROWS;
+    padding = DEFAULT_PADDING;
+
+    unlink(tmp_file);
     TEST_PASS();
 }
 
@@ -979,6 +1024,7 @@ int main(void) {
     test_ghostty_conf_parsing();
     test_titus_themes_toml_parsing();
     test_theme_discovery_cascade();
+    test_config_file_parsing();
     test_alt_screen_clean_colors();
     test_working_directory_handling();
     test_apc_sequence_filtering();

@@ -1,4 +1,4 @@
-.TH DWMTERM 1 "September 2026" "dwmterm 1.0" "User Commands"
+.TH DWMTERM 1 "September 2026" "dwmterm 0.1" "User Commands"
 .SH NAME
 dwmterm \- ultra-minimal, low-latency CPU-framebuffer terminal emulator for DWM
 .SH SYNOPSIS
@@ -36,6 +36,15 @@ on the command line.
 .TP
 \fB\-T\fR, \fB\-t\fR \fItitle\fR
 Set the initial window title to \fItitle\fR.
+.TP
+\fB\-s\fR, \fB\-\-font\-size \fIpt\fR
+Set the initial font size in points (6 to 72, default: 10).
+.TP
+\fB\-f\fR, \fB\-\-font \fIfamily\fR
+Set the font family name (e.g. "MesloLGS Nerd Font" or "JetBrainsMono Nerd Font").
+.TP
+\fB\-p\fR, \fB\-\-padding \fIpx\fR
+Set the internal window padding in pixels (0 to 100, default: 12).
 .TP
 \fB\-v\fR, \fB\-\-version\fR
 Print version information and exit.
@@ -102,8 +111,14 @@ and window backgrounds without session interruption.
 Overrides the system data directory for fonts and assets.
 .SH FILES
 .TP
+.I ~/.config/dwmterm/config
+User configuration file defining typography (font_size, font_family) and initial geometry (cols, rows).
+.TP
+.I ~/.config/dwmterm/colors.example
+Documented template of the default Arctic Nord 16-color ANSI palette.
+.TP
 .I ~/.config/dwmterm/colors
-Optional user palette configuration file defining background, foreground, cursor,
+Optional user palette configuration file defining background, foreground, selection,
 and ANSI colors 0 through 15.
 .TP
 .I /usr/local/share/fonts/TTF/MesloLGSNerdFont-Regular.ttf

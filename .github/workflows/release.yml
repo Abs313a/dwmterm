@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-release:
+    name: Build & Publish Release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc \
+            make \
+            pkg-config \
+            libx11-dev \
+            libxext-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev
+
+      - name: Run test suite
+        run: |
+          make clean
+          make test
+
+      - name: Build release tarball
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG_NAME#v}"
+          make dist VERSION="${VERSION}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG_NAME#v}"
+          gh release create "${TAG_NAME}" \
+            dist/dwmterm-v${VERSION}-linux-x86_64.tar.gz \
+            dist/dwmterm-v${VERSION}-linux-x86_64.tar.gz.sha256 \
+            --title "DWM-Terminal ${TAG_NAME}" \
+            --generate-notes

@@ -1,0 +1,14 @@
+# ~/.config/dwmterm/config
+# DWM-Terminal General Configuration
+# Syntax: key = value (lines starting with # or ; are ignored)
+
+# Typography
+font_size = 10
+font_family = MesloLGS Nerd Font
+
+# Window Padding (internal margin in pixels)
+padding = 12
+
+# Window Geometry (columns x rows)
+# cols = 90
+# rows = 28
