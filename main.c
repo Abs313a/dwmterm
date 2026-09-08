@@ -44,32 +44,33 @@ static int padding = DEFAULT_PADDING;
 #define PADDING padding
 #define MAX_HIST_LINES 4096
 
-// Default Arctic Nord Palette
-#define DEFAULT_COLOR_BG      0x002E3440 // Polar Night
-#define DEFAULT_COLOR_FG      0x00ECEFF4 // Snow Storm
+// Default Palette
+#define DEFAULT_COLOR_BG      0x00000000 // Pitch Black
+#define DEFAULT_COLOR_FG      0x00E5E5E5 // Standard Light Gray / White
 #define DEFAULT_COLOR_CURSOR  0x00FFFFFF // Fixed White
-#define DEFAULT_COLOR_SEL_BG  0x00434C5E // Polar Night lighter
-#define DEFAULT_COLOR_SEL_FG  0x0088C0D0 // Frost Cyan
-#define DEFAULT_COLOR_HUD_BG  0x0088C0D0 // Frost Cyan (Scrubber HUD)
-#define DEFAULT_COLOR_HUD_FG  0x002E3440 // Polar Night Dark
+#define DEFAULT_COLOR_SEL_BG  0x00444444 // Neutral Dark Gray
+#define DEFAULT_COLOR_SEL_FG  0x00FFFFFF // Pure White
+#define DEFAULT_COLOR_HUD_BG  0x00444444 // Neutral Dark Gray (Scrubber HUD)
+#define DEFAULT_COLOR_HUD_FG  0x00FFFFFF // Pure White
 
+// Standard Xterm / ANSI 16-Color Palette
 static const uint32_t default_ansi_palette[16] = {
-    0x002E3440, // 0: Black (Nord0)
-    0x00BF616A, // 1: Red (Nord11)
-    0x00A3BE8C, // 2: Green (Nord14)
-    0x00EBCB8B, // 3: Yellow (Nord13)
-    0x0081A1C1, // 4: Blue (Nord9)
-    0x00B48EAD, // 5: Magenta (Nord15)
-    0x0088C0D0, // 6: Cyan (Nord8)
-    0x00E5E9F0, // 7: White (Nord5)
-    0x004C566A, // 8: Bright Black (Nord3)
-    0x00BF616A, // 9: Bright Red (Nord11)
-    0x00A3BE8C, // 10: Bright Green (Nord14)
-    0x00EBCB8B, // 11: Bright Yellow (Nord13)
-    0x0081A1C1, // 12: Bright Blue (Nord9)
-    0x00B48EAD, // 13: Bright Magenta (Nord15)
-    0x008FBCBB, // 14: Bright Cyan (Nord7)
-    0x00ECEFF4, // 15: Bright White (Nord6)
+    0x00000000, // 0:  Black
+    0x00CD0000, // 1:  Red
+    0x0000CD00, // 2:  Green
+    0x00CDCD00, // 3:  Yellow
+    0x000000EE, // 4:  Blue
+    0x00CD00CD, // 5:  Magenta
+    0x0000CDCD, // 6:  Cyan
+    0x00E5E5E5, // 7:  White
+    0x007F7F7F, // 8:  Bright Black (Gray)
+    0x00FF0000, // 9:  Bright Red
+    0x0000FF00, // 10: Bright Green
+    0x00FFFF00, // 11: Bright Yellow
+    0x005C5CFF, // 12: Bright Blue
+    0x00FF00FF, // 13: Bright Magenta
+    0x0000FFFF, // 14: Bright Cyan
+    0x00FFFFFF  // 15: Bright White
 };
 
 static uint32_t color_bg = DEFAULT_COLOR_BG;
@@ -192,8 +193,8 @@ static int hist_count = 0;
 static int scroll_offset = 0;
 
 // Font Metrics & Scaling
-static int font_pt = 10;
-static int default_font_pt = 10;
+static int font_pt = 12;
+static int default_font_pt = 12;
 static char config_font_family[128] = {0};
 static int display_dpi = 96;
 
@@ -2680,7 +2681,7 @@ int main(int argc, char *argv[]) {
                    "  -e <cmd> [args...]             Execute command with arguments instead of shell\n"
                    "  -T, -t <title>                 Override initial window title\n"
                    "  -d, --working-directory <dir>  Set starting working directory\n"
-                   "  -s, --font-size <pt>           Set font size in points (6..72, default: 10)\n"
+                   "  -s, --font-size <pt>           Set font size in points (6..72, default: 12)\n"
                    "  -f, --font <family>            Set font family (e.g. 'MesloLGS Nerd Font')\n"
                    "  -p, --padding <px>             Set internal window padding in pixels (default: 12)\n"
                    "  -v, --version                  Display version information and exit\n"

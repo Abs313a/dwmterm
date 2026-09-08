@@ -2,25 +2,25 @@
 # Copy this file to ~/.config/dwmterm/colors to enable static color overrides.
 # Note: creating ~/.config/dwmterm/colors takes priority over system desktop themes.
 
-background   = #2E3440
-foreground   = #ECEFF4
-selection    = #434C5E
-selection_fg = #88C0D0
+background   = #000000
+foreground   = #E5E5E5
+selection    = #444444
+selection_fg = #FFFFFF
 
-# 16-Color ANSI Palette
-color0  = #3B4252
-color1  = #BF616A
-color2  = #A3BE8C
-color3  = #EBCB8B
-color4  = #81A1C1
-color5  = #B48EAD
-color6  = #88C0D0
-color7  = #E5E9F0
-color8  = #4C566A
-color9  = #BF616A
-color10 = #A3BE8C
-color11 = #EBCB8B
-color12 = #81A1C1
-color13 = #B48EAD
-color14 = #8FBCBB
-color15 = #ECEFF4
+# 16-Color ANSI Palette (Standard Xterm)
+color0  = #000000
+color1  = #CD0000
+color2  = #00CD00
+color3  = #CDCD00
+color4  = #0000EE
+color5  = #CD00CD
+color6  = #00CDCD
+color7  = #E5E5E5
+color8  = #7F7F7F
+color9  = #FF0000
+color10 = #00FF00
+color11 = #FFFF00
+color12 = #5C5CFF
+color13 = #FF00FF
+color14 = #00FFFF
+color15 = #FFFFFF

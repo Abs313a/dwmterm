@@ -581,8 +581,8 @@ static void test_config_file_parsing(void) {
     fprintf(f, "padding = 16 ; padding comment\n");
     fclose(f);
 
-    font_pt = 10;
-    default_font_pt = 10;
+    font_pt = 12;
+    default_font_pt = 12;
     config_font_family[0] = '\0';
     cols = DEFAULT_COLS;
     rows = DEFAULT_ROWS;
@@ -609,8 +609,8 @@ static void test_config_file_parsing(void) {
     assert(strcmp(config_font_family, "CaskaydiaMono Nerd Font") == 0);
 
     // Reset back to defaults
-    font_pt = 10;
-    default_font_pt = 10;
+    font_pt = 12;
+    default_font_pt = 12;
     config_font_family[0] = '\0';
     cols = DEFAULT_COLS;
     rows = DEFAULT_ROWS;

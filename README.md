@@ -38,7 +38,7 @@ Modern terminal emulators (Alacritty, Kitty, WezTerm, Ghostty) rely on heavy GPU
 * **⏱️ Interactive PTY Flight Recorder ("Time Machine")**: Press `F1` at any time to freeze terminal state and scrub backwards through your session history with an on-screen HUD scrubber, or export your session to asciinema v2 `.cast` format.
 * **🔡 Bundled Meslo Nerd Font**: Ships with official `MesloLGS Nerd Font` and automatically installs system-wide to `/usr/local/share/fonts/TTF/` with fontconfig cache refresh, making it instantly usable by DWM, Quickshell, and dmenu.
 * **📐 DPI-Aware Typography**: Dynamic display DPI detection ensures true typographical point scaling, with strict monospace fallback filtering.
-* **🎨 Dynamic Palette & Theming**: Built-in Arctic Nord palette with runtime reload support via `${XDG_CONFIG_HOME:-~/.config}/dwmterm/colors` and `SIGUSR1`, integrating seamlessly with `dwm-titus`'s `themes.toml` and `theme-apply.sh`.
+* **🎨 Dynamic Palette & Theming**: Built-in standard 16-color ANSI palette on pitch black background (`#000000`) with runtime reload support via `${XDG_CONFIG_HOME:-~/.config}/dwmterm/colors` and `SIGUSR1`, integrating seamlessly with `dwm-titus`'s `themes.toml` and `theme-apply.sh`.
 * **🖥️ Alternate Screen & ANSI Truecolor**: Full 24-bit RGB truecolor support, `DECSET 1049/1047/47` alternate buffer swapping for `vim`, `htop`, `tmux`, and smooth mouse wheel translation.
 * **📋 X11 Selection & OSC 52**: Click-and-drag mouse highlighting, PRIMARY middle-click paste, and bidirectional OSC 52 clipboard synchronization.
 
@@ -189,7 +189,7 @@ dwmterm
 # ~/.config/dwmterm/config
 
 # Typography
-font_size = 10
+font_size = 12
 font_family = MesloLGS Nerd Font
 
 # Window Padding (internal margin in pixels)
@@ -201,14 +201,14 @@ padding = 12
 ```
 
 ### Settings Reference
-* `font_size` (`-s, --font-size <pt>`): Font size in points (6–72), scaled automatically by display DPI.
+* `font_size` (`-s, --font-size <pt>`): Font size in points (6–72, default: 12), scaled automatically by display DPI.
 * `font_family` (`-f, --font <family>`): Font family name with strict monospace fallback matching.
 * `padding` (`-p, --padding <px>`): Internal window border margin in pixels (0–100, default: 12).
 * `cols` / `rows`: Initial terminal character grid dimensions (columns × rows).
 
 ### CLI Overrides
 ```bash
-dwmterm -s 12                         # Launch with 12pt font size
+dwmterm -s 14                         # Launch with custom 14pt font size
 dwmterm -f "JetBrainsMono Nerd Font"  # Launch with custom font
 dwmterm -p 16                         # Launch with 16px internal padding
 ```
@@ -217,33 +217,33 @@ dwmterm -p 16                         # Launch with 16px internal padding
 
 ## 🎨 Theme & Palette Customization
 
-`dwmterm` defaults to the Arctic Nord 16-color palette with a fixed white cursor out-of-the-box. It automatically detects and hot-reloads active desktop themes (such as Omarchy or `dwm-titus`).
+`dwmterm` defaults to a pitch black background (`#000000`) and standard 16-color ANSI palette with a fixed white cursor out-of-the-box. It automatically detects and hot-reloads active desktop themes (such as Omarchy or `dwm-titus`).
 
 To force a static color palette override, define your palette in `${XDG_CONFIG_HOME:-~/.config}/dwmterm/colors` (a starter template is available in `colors.example`):
 
 ```ini
 # ~/.config/dwmterm/colors
-background  = #2E3440
-foreground  = #ECEFF4
-selection   = #434C5E
-selection_fg = #88C0D0
+background   = #000000
+foreground   = #E5E5E5
+selection    = #444444
+selection_fg = #FFFFFF
 
-color0  = #3B4252
-color1  = #BF616A
-color2  = #A3BE8C
-color3  = #EBCB8B
-color4  = #81A1C1
-color5  = #B48EAD
-color6  = #88C0D0
-color7  = #E5E9F0
-color8  = #4C566A
-color9  = #BF616A
-color10 = #A3BE8C
-color11 = #EBCB8B
-color12 = #81A1C1
-color13 = #B48EAD
-color14 = #8FBCBB
-color15 = #ECEFF4
+color0  = #000000
+color1  = #CD0000
+color2  = #00CD00
+color3  = #CDCD00
+color4  = #0000EE
+color5  = #CD00CD
+color6  = #00CDCD
+color7  = #E5E5E5
+color8  = #7F7F7F
+color9  = #FF0000
+color10 = #00FF00
+color11 = #FFFF00
+color12 = #5C5CFF
+color13 = #FF00FF
+color14 = #00FFFF
+color15 = #FFFFFF
 ```
 
 ### Live Theme Reloading
