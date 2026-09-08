@@ -23,6 +23,7 @@
 #include <limits.h>
 #include <wchar.h>
 #include <locale.h>
+#include <math.h>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -92,6 +93,22 @@ static uint32_t ansi_palette[16] = {
     0x004C566A, 0x00BF616A, 0x00A3BE8C, 0x00EBCB8B,
     0x0081A1C1, 0x00B48EAD, 0x008FBCBB, 0x00ECEFF4
 };
+
+// Fast Perceptual Gamma (~2.0) Blending LUTs
+static uint16_t sq_lut[256];
+static uint8_t sqrt_lut[65536];
+static int gamma_lut_inited = 0;
+
+static void init_gamma_lut(void) {
+    if (gamma_lut_inited) return;
+    for (int i = 0; i < 256; i++) {
+        sq_lut[i] = (uint16_t)(i * i);
+    }
+    for (int i = 0; i < 65536; i++) {
+        sqrt_lut[i] = (uint8_t)(sqrt((double)i) + 0.5);
+    }
+    gamma_lut_inited = 1;
+}
 
 static volatile sig_atomic_t sig_reload_theme = 0;
 
@@ -620,7 +637,7 @@ static CachedGlyph *get_glyph(uint32_t cp) {
                 return NULL;
             }
 
-            int load_flags = FT_LOAD_RENDER;
+            int load_flags = FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT;
             if (!FT_IS_SCALABLE(target_face) || target_face->num_fixed_sizes > 0) {
                 load_flags |= FT_LOAD_COLOR;
             }
@@ -699,6 +716,7 @@ static uint32_t get_256_color(uint8_t idx) {
 }
 
 static void term_init(Terminal *t, int c, int r) {
+    init_gamma_lut();
     memset(t, 0, sizeof(Terminal));
     t->cols = c;
     t->rows = r;
@@ -1699,7 +1717,7 @@ static void set_font_size(int new_pt) {
     }
     clear_glyph_cache();
 
-    FT_Load_Char(ft_face, 'M', FT_LOAD_RENDER);
+    FT_Load_Char(ft_face, 'M', FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT);
     char_w = ft_face->glyph->advance.x >> 6;
     char_h = ft_face->size->metrics.height >> 6;
     ascender_px = ft_face->size->metrics.ascender >> 6;
@@ -1926,11 +1944,11 @@ static void render_frame(void) {
                                     uint32_t obg = (orig >> 8) & 0xFF;
                                     uint32_t obb = orig & 0xFF;
 
-                                    uint32_t nr = (fr * alpha + obr * (255 - alpha)) / 255;
-                                    uint32_t ng = (fg_val * alpha + obg * (255 - alpha)) / 255;
-                                    uint32_t nb = (fb * alpha + obb * (255 - alpha)) / 255;
+                                    uint32_t lin_r = (sq_lut[fr] * alpha + sq_lut[obr] * (255 - alpha)) / 255;
+                                    uint32_t lin_g = (sq_lut[fg_val] * alpha + sq_lut[obg] * (255 - alpha)) / 255;
+                                    uint32_t lin_b = (sq_lut[fb] * alpha + sq_lut[obb] * (255 - alpha)) / 255;
 
-                                    dst_row[px] = (nr << 16) | (ng << 8) | nb;
+                                    dst_row[px] = ((uint32_t)sqrt_lut[lin_r] << 16) | ((uint32_t)sqrt_lut[lin_g] << 8) | (uint32_t)sqrt_lut[lin_b];
                                 }
                             }
                         }
@@ -2007,10 +2025,23 @@ static void render_frame(void) {
 
 static char *resolve_font_path(const char *pattern_str, int check_family_match, int *face_index) {
     if (face_index) *face_index = 0;
-    FcPattern *pat = FcPatternCreate();
+    if (!pattern_str || !*pattern_str) return NULL;
+
+    FcPattern *pat = NULL;
+    if (strchr(pattern_str, ':')) {
+        pat = FcNameParse((const FcChar8 *)pattern_str);
+    } else {
+        pat = FcPatternCreate();
+        if (pat) {
+            FcPatternAddString(pat, FC_FAMILY, (const FcChar8 *)pattern_str);
+        }
+    }
     if (!pat) return NULL;
-    FcPatternAddString(pat, FC_FAMILY, (const FcChar8 *)pattern_str);
-    FcPatternAddInteger(pat, FC_SPACING, FC_MONO);
+
+    int existing_spacing = -1;
+    if (FcPatternGetInteger(pat, FC_SPACING, 0, &existing_spacing) != FcResultMatch) {
+        FcPatternAddInteger(pat, FC_SPACING, FC_MONO);
+    }
     FcConfigSubstitute(NULL, pat, FcMatchPattern);
     FcDefaultSubstitute(pat);
 
@@ -2021,14 +2052,29 @@ static char *resolve_font_path(const char *pattern_str, int check_family_match, 
         int family_ok = 1;
         if (check_family_match) {
             family_ok = 0;
+            char base_pat[128] = {0};
+            strncpy(base_pat, pattern_str, sizeof(base_pat) - 1);
+            char *colon = strchr(base_pat, ':');
+            if (colon) *colon = '\0';
+            char *pbe = base_pat + strlen(base_pat) - 1;
+            while (pbe >= base_pat && (*pbe == ' ' || *pbe == '\t')) { *pbe = '\0'; pbe--; }
+
+            char first_word[64] = {0};
+            sscanf(base_pat, "%63s", first_word);
+
             FcChar8 *family = NULL;
             for (int i = 0; FcPatternGetString(match, FC_FAMILY, i, &family) == FcResultMatch; i++) {
-                if (family && (strcasestr((const char *)family, pattern_str) != NULL ||
-                               (strcasestr(pattern_str, "JetBrains") && strcasestr((const char *)family, "JetBrains")) ||
-                               (strcasestr(pattern_str, "Meslo") && strcasestr((const char *)family, "Meslo")) ||
-                               (strcasestr(pattern_str, "Fira") && strcasestr((const char *)family, "Fira")))) {
-                    family_ok = 1;
-                    break;
+                if (family) {
+                    if (strcasestr((const char *)family, base_pat) != NULL ||
+                        strcasestr(base_pat, (const char *)family) != NULL) {
+                        family_ok = 1;
+                        break;
+                    }
+                    if (first_word[0] && strlen(first_word) >= 3 &&
+                        strcasestr((const char *)family, first_word) != NULL) {
+                        family_ok = 1;
+                        break;
+                    }
                 }
             }
         }
@@ -2113,6 +2159,26 @@ static void load_config_from_file(const char *config_path) {
         char *p = line;
         while (*p == ' ' || *p == '\t') p++;
         if (*p == '#' || *p == ';' || *p == '\n' || *p == '\r' || *p == '\0') continue;
+
+        // Strip trailing inline comments outside of quotes
+        char in_quote = '\0';
+        for (char *c = p; *c; c++) {
+            if (in_quote) {
+                if (*c == in_quote) in_quote = '\0';
+            } else {
+                if (*c == '"' || *c == '\'') {
+                    in_quote = *c;
+                } else if (*c == '#' || *c == ';') {
+                    *c = '\0';
+                    break;
+                }
+            }
+        }
+
+        // Trim trailing whitespace from stripped line
+        char *pe = p + strlen(p) - 1;
+        while (pe >= p && (*pe == ' ' || *pe == '\t' || *pe == '\n' || *pe == '\r')) { *pe = '\0'; pe--; }
+        if (*p == '\0') continue;
 
         char key[64] = {0};
         char val[128] = {0};
@@ -2538,6 +2604,7 @@ static void configure_child_env(void) {
 
 int main(int argc, char *argv[]) {
     setlocale(LC_ALL, "");
+    init_gamma_lut();
     const char *opt_title = NULL;
     const char *opt_dir = NULL;
     char **cmd_argv = NULL;
@@ -2678,7 +2745,29 @@ int main(int argc, char *argv[]) {
     }
 
     if (!ft_face) {
-        // 1. Check bundled Meslo Nerd Font relative to executable, DATADIR, or cwd
+        // 1. Cascade through system Fontconfig monospace patterns and aliases
+        const char *fc_cascade[] = {
+            "monospace",
+            "ui-monospace",
+            "fixed",
+            "terminal",
+            ":spacing=mono",
+            NULL
+        };
+        for (int i = 0; fc_cascade[i]; i++) {
+            font_file = resolve_font_path(fc_cascade[i], 0, &face_idx);
+            if (font_file) {
+                if (FT_New_Face(ft_lib, font_file, face_idx, &ft_face) == 0) {
+                    break;
+                }
+                free(font_file);
+                font_file = NULL;
+            }
+        }
+    }
+
+    if (!ft_face) {
+        // 2. Check bundled Meslo Nerd Font relative to executable, DATADIR, or cwd
         char exe_buf[1024];
         ssize_t elen = readlink("/proc/self/exe", exe_buf, sizeof(exe_buf) - 1);
         if (elen > 0) {
@@ -2712,42 +2801,47 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-
-        // 2. Fall back to Fontconfig lookups (Meslo -> JetBrainsMono -> Nerd Font -> monospace)
-        if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
-            if (font_file) { free(font_file); font_file = NULL; }
-            font_file = resolve_font_path("MesloLGS Nerd Font", 1, &face_idx);
-            if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
-                if (font_file) { free(font_file); font_file = NULL; }
-                font_file = resolve_font_path("Meslo Nerd Font", 1, &face_idx);
-                if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
-                    if (font_file) { free(font_file); font_file = NULL; }
-                    font_file = resolve_font_path("JetBrainsMono Nerd Font", 1, &face_idx);
-                    if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
-                        if (font_file) { free(font_file); font_file = NULL; }
-                        font_file = resolve_font_path("Nerd Font", 0, &face_idx);
-                        if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
-                            if (font_file) { free(font_file); font_file = NULL; }
-                            font_file = resolve_font_path("monospace", 0, &face_idx);
-                            if (!font_file || FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
-                                fprintf(stderr, "Could not load Meslo Nerd Font or fallback monospace font\n");
-                                if (font_file) free(font_file);
-                                FcFini();
-                                FT_Done_FreeType(ft_lib);
-                                XCloseDisplay(dpy);
-                                return 1;
-                            }
-                        }
-                    }
-                }
+        if (font_file) {
+            if (FT_New_Face(ft_lib, font_file, face_idx, &ft_face) != 0) {
+                free(font_file);
+                font_file = NULL;
             }
+        }
+    }
+
+    if (!ft_face) {
+        // 3. Fall back to remaining Fontconfig lookups
+        const char *fallback_names[] = {
+            "MesloLGS Nerd Font",
+            "Meslo Nerd Font",
+            "JetBrainsMono Nerd Font",
+            "Nerd Font",
+            NULL
+        };
+        for (int i = 0; fallback_names[i]; i++) {
+            font_file = resolve_font_path(fallback_names[i], 0, &face_idx);
+            if (font_file) {
+                if (FT_New_Face(ft_lib, font_file, face_idx, &ft_face) == 0) {
+                    break;
+                }
+                free(font_file);
+                font_file = NULL;
+            }
+        }
+        if (!ft_face) {
+            fprintf(stderr, "dwmterm: could not load system monospace or fallback fonts\n");
+            if (font_file) free(font_file);
+            FcFini();
+            FT_Done_FreeType(ft_lib);
+            XCloseDisplay(dpy);
+            return 1;
         }
     }
     if (font_file) free(font_file);
     FcFini();
 
     FT_Set_Pixel_Sizes(ft_face, 0, pt_to_px(font_pt));
-    FT_Load_Char(ft_face, 'M', FT_LOAD_RENDER);
+    FT_Load_Char(ft_face, 'M', FT_LOAD_RENDER | FT_LOAD_TARGET_LIGHT);
 
     char_w = ft_face->glyph->advance.x >> 6;
     char_h = ft_face->size->metrics.height >> 6;

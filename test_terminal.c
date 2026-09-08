@@ -574,11 +574,11 @@ static void test_config_file_parsing(void) {
     assert(f != NULL);
 
     fprintf(f, "# Test configuration file\n");
-    fprintf(f, "font_size = 14\n");
-    fprintf(f, "font_family = \"JetBrainsMono Nerd Font\"\n");
+    fprintf(f, "font_size = 14 # inline comment with hash\n");
+    fprintf(f, "font_family = \"JetBrainsMono Nerd Font\" ; trailing semicolon comment\n");
     fprintf(f, "cols = 100\n");
-    fprintf(f, "rows = 35\n");
-    fprintf(f, "padding = 16\n");
+    fprintf(f, "rows = 35 # another comment\n");
+    fprintf(f, "padding = 16 ; padding comment\n");
     fclose(f);
 
     font_pt = 10;
@@ -596,6 +596,17 @@ static void test_config_file_parsing(void) {
     assert(cols == 100);
     assert(rows == 35);
     assert(padding == 16);
+
+    // Test unquoted font family with inline comment
+    f = fopen(tmp_file, "w");
+    assert(f != NULL);
+    fprintf(f, "font_family = CaskaydiaMono Nerd Font #MesloLGS Nerd Font\n");
+    fprintf(f, "font_size = 26 # font size comment\n");
+    fclose(f);
+
+    load_config_from_file(tmp_file);
+    assert(font_pt == 26);
+    assert(strcmp(config_font_family, "CaskaydiaMono Nerd Font") == 0);
 
     // Reset back to defaults
     font_pt = 10;

@@ -11,7 +11,7 @@ BIN = dwmterm
 PKG_NAME = dwmterm
 
 PKG_CFLAGS = $(shell pkg-config --cflags freetype2 fontconfig)
-PKG_LIBS = $(shell pkg-config --libs freetype2 fontconfig) -lX11 -lXext -lutil
+PKG_LIBS = $(shell pkg-config --libs freetype2 fontconfig) -lX11 -lXext -lutil -lm
 
 CFLAGS ?= -O2 -Wall -Wextra -pedantic
 CPPFLAGS ?=
