@@ -6,9 +6,16 @@
 font_size = 12
 font_family = MesloLGS Nerd Font
 
-# Window Padding (internal margin in pixels)
-padding = 12
+# Window Padding (internal margins in pixels)
+# padding_x = 14
+# padding_y = 14
 
-# Window Geometry (columns x rows)
-# cols = 90
-# rows = 28
+# Cursor Styling
+# cursor_style = bar       # bar, block, or underline
+# cursor_blink = true      # true or false
+
+# Keybindings
+# Modifiers: super, mod, mod4, win, cmd, ctrl, shift, alt, mod1
+# Actions: copy, paste, none (unbind)
+# keybind = super+c = copy
+# keybind = super+v = paste

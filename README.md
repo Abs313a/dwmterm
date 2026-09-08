@@ -101,32 +101,51 @@ sudo make uninstall
 
 ## 🪟 DWM Integration
 
-### dwm-titus (`window-rules.toml`)
-In [dwm-titus](https://github.com/ChrisTitusTech/dwm-titus), window rules are parsed dynamically from TOML (zero recompilation needed). Add `Dwmterm` to your `window-rules.toml`:
+### dwm-titus (`window-rules.toml` & `hotkeys.toml`)
 
-```toml
-rules = [
-  { class="Dwmterm", isterminal=1 },
-]
-```
+In [dwm-titus](https://github.com/ChrisTitusTech/dwm-titus), configuration is parsed dynamically from TOML (zero recompilation needed):
+
+1. **Window Swallowing (`window-rules.toml`):**
+   Add `Dwmterm` to your `window-rules.toml`:
+   ```toml
+   rules = [
+     { class="Dwmterm", isterminal=1 },
+   ]
+   ```
+
+2. **Spawn Shortcut (`hotkeys.toml`):**
+   In `dwm-titus`, the Windows / Super key is referenced as `"SUPER"`. Bind `dwmterm` to `Super + Return`:
+   ```toml
+   { mod="SUPER", key="Return", desc="Terminal", func="spawn", exec=["dwmterm"] }
+   ```
 
 ### Vanilla DWM (`config.h`)
-In traditional `dwm`, add the swallowing rule to `config.h`:
+
+In traditional `dwm`, define `MODKEY` as `Mod4Mask` (Super / Windows key) and add the swallowing rule and spawn binding in `config.h`:
 
 ```c
+/* Mod4Mask = Super/Windows key (recommended), Mod1Mask = Alt key (suckless default) */
+#define MODKEY Mod4Mask
+
 static const Rule rules[] = {
     /* class      instance    title       tags mask     isfloating   isterminal noswallow monitor */
     { "Dwmterm",  NULL,       NULL,       0,            0,           1,         0,        -1 },
 };
-```
 
-To spawn `dwmterm` with your modifier keybinding (e.g. `Mod4 + Return`):
-```c
 static const char *termcmd[] = { "dwmterm", NULL };
 
 static Key keys[] = {
     { MODKEY, XK_Return, spawn, {.v = termcmd } },
 };
+```
+
+### Hyprland / Wayland Integration
+
+When running under Wayland compositors (such as Hyprland) that manage universal clipboard shortcuts, tag `dwmterm` as a terminal in your window rules so the compositor forwards `CTRL + Insert` / `SHIFT + Insert` rather than intercepting `SUPER + C` as `CTRL + C` (`^C`):
+
+**`~/.config/hypr/hyprland.conf`:**
+```ini
+windowrulev2 = tag +terminal, class:^([dD]wmterm)$
 ```
 
 ---
@@ -135,17 +154,21 @@ static Key keys[] = {
 
 | Keybinding | Action |
 | :--- | :--- |
-| `F1` | **Toggle Flight Recorder ("Time Machine") Scrubber** |
+| `F1` / `Ctrl` + `Shift` + `R` | **Toggle Flight Recorder ("Time Machine") Scrubber** |
 | `Left` / `Right` | Step backward / forward through terminal timeline (in scrubber mode) |
 | `Home` / `End` | Jump to beginning / return to live output (in scrubber mode) |
-| `Escape` / Any key | Exit scrubber mode and return to interactive prompt |
+| `Escape` / `q` | Exit scrubber mode and return to interactive prompt |
+| `Ctrl` + `Shift` + `C` / `Super` + `C` / `Ctrl` + `Insert` | Copy selection to CLIPBOARD |
+| `Ctrl` + `Shift` + `V` / `Super` + `V` / `Shift` + `Insert` | Paste from CLIPBOARD |
+| `Mouse Left Drag` | Highlight text to copy (PRIMARY & CLIPBOARD) |
+| `Mouse Middle Click`| Paste text from PRIMARY selection |
 | `Ctrl` + `+` (or `=`) | Increase font size by 2pt |
 | `Ctrl` + `-` | Decrease font size by 2pt |
 | `Ctrl` + `0` | Reset font size to default configured size |
 | `Shift` + `PageUp` | Scroll up in terminal history |
 | `Shift` + `PageDown` | Scroll down in terminal history |
-| `Mouse Left Drag` | Highlight text to copy (PRIMARY & CLIPBOARD) |
-| `Mouse Middle Click`| Paste text from PRIMARY selection |
+| `Shift` + `Return` | Send CSI-u modified Return (`\e[13;2u`) |
+| `Alt` + `Shift` + `Return` | Send CSI-u modified Return (`\e[13;4u`) |
 
 ---
 
@@ -193,32 +216,59 @@ dwmterm
 font_size = 12
 font_family = MesloLGS Nerd Font
 
-# Window Padding (internal margin in pixels)
-padding = 12
+# Window Padding (internal margins in pixels)
+# padding_x = 14
+# padding_y = 14
 
-# Window Geometry (columns x rows)
-# cols = 90
-# rows = 28
+# Cursor Styling & Blinking
+# cursor_style = block       # bar (beam), block, or underline
+# cursor_blink = true        # true or false (500ms cycle)
+
+# Custom Keybindings
+# Supported modifiers: super / mod / mod4 / win / cmd, ctrl, shift, alt / mod1
+# Supported actions:   copy, paste, none (unbind)
+# keybind = super+c = copy
+# keybind = super+v = paste
 ```
 
 ### Settings Reference
-* `font_size` (`-s, --font-size <pt>`): Font size in points (6–72, default: 12), scaled automatically by display DPI.
-* `font_family` (`-f, --font <family>`): Font family name with strict monospace fallback matching.
-* `padding` (`-p, --padding <px>`): Internal window border margin in pixels (0–100, default: 12).
-* `cols` / `rows`: Initial terminal character grid dimensions (columns × rows).
+
+#### Typography & Layout
+* `font_size` (`-s, --font-size <pt>`): Font size in points (6–72, default: 12), scaled automatically to match display DPI.
+* `font_family` (`-f, --font <family>`): Primary font family name with strict monospace fallback cascade.
+* `padding` (`-p, --padding <px>`): Uniform internal window margin in pixels (0–100, default: 12).
+* `padding_x` / `window-padding-x`: Independent horizontal window margin in pixels.
+* `padding_y` / `window-padding-y`: Independent vertical window margin in pixels.
+
+#### Cursor Styling & Animation
+* `cursor_style` (`cursor-style`, `cursor_shape`): Visual cursor shape:
+  * `bar` / `beam` / `line` (default vertical beam)
+  * `block` (solid rectangular cell)
+  * `underline` (horizontal bottom rule)
+* `cursor_blink` (`cursor-blink`, `cursor-style-blink`): Enable or disable cursor blinking (`true` / `false`). Runs a 500ms blink interval and automatically snaps back to solid visible on keypress or incoming PTY stream.
+* **DECSCUSR Standard Compliance:** Escape sequences like `DECSCUSR 0` (`\e[0 q`) dynamically revert to your configured cursor style and blink preference rather than forcing a terminal reset to default beam.
+
+#### Keybindings & Modifier Auto-Discovery
+* `keybind = <combo> = <action>`: Assign a key combination to an action (`copy` or `paste`). Multiple lines can be defined.
+* `keybind = <combo> = none`: Unbind a default or custom shortcut.
+* **Supported Modifiers:** `super`, `mod`, `mod4`, `win`, `cmd`, `ctrl`, `shift`, `alt`, `mod1`.
+* **Automatic Detection:** `dwmterm` automatically queries `XGetModifierMapping` at startup to detect which modifier index maps to `Super` / `Mod4` and `Alt` / `Mod1`, guaranteeing exact matching on X11 and XWayland.
+* **Lock Sanitization:** Key press evaluation strips CapsLock (`LockMask`) and NumLock (`Mod2Mask`) so shortcuts trigger consistently even when locks are enabled.
 
 ### CLI Overrides
 ```bash
 dwmterm -s 14                         # Launch with custom 14pt font size
 dwmterm -f "JetBrainsMono Nerd Font"  # Launch with custom font
 dwmterm -p 16                         # Launch with 16px internal padding
+dwmterm -d ~/Projects                 # Launch in specific directory
+dwmterm -T "Server Log" -e htop       # Launch with custom title running a command
 ```
 
 ---
 
 ## 🎨 Theme & Palette Customization
 
-`dwmterm` defaults to a pitch black background (`#000000`) and standard 16-color ANSI palette with a fixed white cursor out-of-the-box. It automatically detects and hot-reloads active desktop themes (such as Omarchy or `dwm-titus`).
+`dwmterm` defaults to a pitch black background (`#000000`) and standard 16-color ANSI palette with a fixed white cursor out-of-the-box. It automatically detects and hot-reloads active desktop themes (such as `dwm-titus` or dynamic system palettes).
 
 To force a static color palette override, define your palette in `${XDG_CONFIG_HOME:-~/.config}/dwmterm/colors` (a starter template is available in `colors.example`):
 

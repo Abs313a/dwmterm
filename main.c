@@ -15,6 +15,8 @@
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
 #include <X11/keysym.h>
+#include <X11/XKBlib.h>
+#include <ctype.h>
 #include <X11/extensions/XShm.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
@@ -41,7 +43,9 @@
 #define DEFAULT_ROWS 28
 #define DEFAULT_PADDING 12
 static int padding = DEFAULT_PADDING;
-#define PADDING padding
+static int padding_x = DEFAULT_PADDING;
+static int padding_y = DEFAULT_PADDING;
+#define CLEAN_MASK(s) ((s) & ~(LockMask | Mod2Mask))
 #define MAX_HIST_LINES 4096
 
 // Default Palette
@@ -240,7 +244,12 @@ static int app_cursor_keys = 0;
 static int mouse_mode = 0;       // 0=off, 1000=normal, 1002=btn-event, 1003=any-event
 static int mouse_sgr = 0;        // 1=SGR 1006 extended mode
 static int bracketed_paste = 0;  // DECSET 2004
-static int cursor_style = 6;     // DECSCUSR: 0=default(beam), 1..2=block, 3..4=underline, 5..6=beam
+static int default_cursor_style = 6;
+static int cursor_style = 6;     // DECSCUSR: 0=default, 1..2=block, 3..4=underline, 5..6=beam
+static int default_cursor_blink = 0;
+static int cursor_blink_enabled = 0;
+static int cursor_blink_state = 1;
+static uint64_t last_cursor_blink_us = 0;
 
 // Selection & Clipboard
 static int sel_active = 0;
@@ -255,6 +264,274 @@ static Atom atom_sel_data = 0;
 static Atom atom_net_wm_name = 0;
 static Atom atom_net_wm_icon_name = 0;
 static Atom atom_net_wm_pid = 0;
+
+// Modifiers and Keybindings
+enum {
+    BIND_MOD_CTRL  = (1 << 0),
+    BIND_MOD_SHIFT = (1 << 1),
+    BIND_MOD_ALT   = (1 << 2),
+    BIND_MOD_SUPER = (1 << 3),
+    BIND_MOD_MOD2  = (1 << 4),
+    BIND_MOD_MOD3  = (1 << 5),
+    BIND_MOD_MOD5  = (1 << 6)
+};
+
+enum {
+    ACTION_NONE = 0,
+    ACTION_COPY,
+    ACTION_PASTE
+};
+
+typedef struct {
+    unsigned int mods;
+    KeySym ksym;
+    int action;
+} KeyBinding;
+
+#define MAX_KEYBINDINGS 64
+static KeyBinding keybindings[MAX_KEYBINDINGS];
+static int keybinding_count = 0;
+static unsigned int super_mod_mask = Mod4Mask;
+static unsigned int alt_mod_mask = Mod1Mask;
+
+static void detect_modifier_masks(Display *d) {
+    if (!d) return;
+    XModifierKeymap *modmap = XGetModifierMapping(d);
+    if (!modmap) return;
+    for (int m = 0; m < 8; m++) {
+        for (int k = 0; k < modmap->max_keypermod; k++) {
+            KeyCode kc = modmap->modifiermap[m * modmap->max_keypermod + k];
+            if (!kc) continue;
+            KeySym ks = XkbKeycodeToKeysym(d, kc, 0, 0);
+            if (ks == XK_Super_L || ks == XK_Super_R) {
+                super_mod_mask = (1U << m);
+            } else if (ks == XK_Alt_L || ks == XK_Alt_R) {
+                alt_mod_mask = (1U << m);
+            }
+        }
+    }
+    XFreeModifiermap(modmap);
+}
+
+static KeySym parse_keysym_name(const char *name) {
+    if (!name || !*name) return NoSymbol;
+    if (strlen(name) == 1) {
+        char ch = (char)tolower((unsigned char)name[0]);
+        if (ch >= 'a' && ch <= 'z') return (KeySym)(XK_a + (ch - 'a'));
+        if (ch >= '0' && ch <= '9') return (KeySym)(XK_0 + (ch - '0'));
+    }
+    if (strcasecmp(name, "insert") == 0) return XK_Insert;
+    if (strcasecmp(name, "kp_insert") == 0) return XK_KP_Insert;
+    if (strcasecmp(name, "delete") == 0 || strcasecmp(name, "del") == 0) return XK_Delete;
+    if (strcasecmp(name, "return") == 0 || strcasecmp(name, "enter") == 0) return XK_Return;
+    if (strcasecmp(name, "backspace") == 0) return XK_BackSpace;
+    if (strcasecmp(name, "tab") == 0) return XK_Tab;
+    if (strcasecmp(name, "escape") == 0 || strcasecmp(name, "esc") == 0) return XK_Escape;
+    if (strcasecmp(name, "pageup") == 0 || strcasecmp(name, "page_up") == 0) return XK_Page_Up;
+    if (strcasecmp(name, "pagedown") == 0 || strcasecmp(name, "page_down") == 0) return XK_Page_Down;
+    if (strcasecmp(name, "home") == 0) return XK_Home;
+    if (strcasecmp(name, "end") == 0) return XK_End;
+    if (strcasecmp(name, "left") == 0) return XK_Left;
+    if (strcasecmp(name, "right") == 0) return XK_Right;
+    if (strcasecmp(name, "up") == 0) return XK_Up;
+    if (strcasecmp(name, "down") == 0) return XK_Down;
+
+    KeySym ks = XStringToKeysym(name);
+    if (ks != NoSymbol) return ks;
+
+    char buf[64];
+    strncpy(buf, name, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    buf[0] = (char)toupper((unsigned char)buf[0]);
+    for (size_t i = 1; i < strlen(buf); i++) buf[i] = (char)tolower((unsigned char)buf[i]);
+    return XStringToKeysym(buf);
+}
+
+static int parse_key_combo(const char *str, unsigned int *out_mods, KeySym *out_ksym) {
+    if (!str || !*str || !out_mods || !out_ksym) return 0;
+    char buf[128];
+    strncpy(buf, str, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    unsigned int mods = 0;
+    KeySym ksym = NoSymbol;
+
+    char *saveptr = NULL;
+    char *token = strtok_r(buf, "+-", &saveptr);
+    while (token) {
+        while (*token == ' ' || *token == '\t') token++;
+        char *end = token + strlen(token) - 1;
+        while (end >= token && (*end == ' ' || *end == '\t')) { *end = '\0'; end--; }
+
+        if (*token) {
+            if (strcasecmp(token, "ctrl") == 0 || strcasecmp(token, "control") == 0) {
+                mods |= BIND_MOD_CTRL;
+            } else if (strcasecmp(token, "shift") == 0) {
+                mods |= BIND_MOD_SHIFT;
+            } else if (strcasecmp(token, "alt") == 0 || strcasecmp(token, "mod1") == 0 || strcasecmp(token, "meta") == 0) {
+                mods |= BIND_MOD_ALT;
+            } else if (strcasecmp(token, "super") == 0 || strcasecmp(token, "mod") == 0 ||
+                       strcasecmp(token, "mod4") == 0 || strcasecmp(token, "win") == 0 ||
+                       strcasecmp(token, "cmd") == 0) {
+                mods |= BIND_MOD_SUPER;
+            } else if (strcasecmp(token, "mod2") == 0) {
+                mods |= BIND_MOD_MOD2;
+            } else if (strcasecmp(token, "mod3") == 0) {
+                mods |= BIND_MOD_MOD3;
+            } else if (strcasecmp(token, "mod5") == 0) {
+                mods |= BIND_MOD_MOD5;
+            } else {
+                KeySym ks = parse_keysym_name(token);
+                if (ks != NoSymbol) {
+                    ksym = ks;
+                }
+            }
+        }
+        token = strtok_r(NULL, "+-", &saveptr);
+    }
+
+    if (ksym == NoSymbol) return 0;
+    *out_mods = mods;
+    *out_ksym = ksym;
+    return 1;
+}
+
+static void add_or_update_keybinding(unsigned int mods, KeySym ksym, int action) {
+    for (int i = 0; i < keybinding_count; i++) {
+        if (keybindings[i].mods == mods && keybindings[i].ksym == ksym) {
+            if (action == ACTION_NONE) {
+                for (int j = i; j < keybinding_count - 1; j++) {
+                    keybindings[j] = keybindings[j + 1];
+                }
+                keybinding_count--;
+            } else {
+                keybindings[i].action = action;
+            }
+            return;
+        }
+    }
+    if (keybinding_count < MAX_KEYBINDINGS && action != ACTION_NONE) {
+        keybindings[keybinding_count].mods = mods;
+        keybindings[keybinding_count].ksym = ksym;
+        keybindings[keybinding_count].action = action;
+        keybinding_count++;
+    }
+}
+
+static void clear_keybindings_for_action(int action) {
+    int w = 0;
+    for (int i = 0; i < keybinding_count; i++) {
+        if (keybindings[i].action != action) {
+            keybindings[w++] = keybindings[i];
+        }
+    }
+    keybinding_count = w;
+}
+
+static void init_default_keybindings(void) {
+    keybinding_count = 0;
+    add_or_update_keybinding(BIND_MOD_CTRL | BIND_MOD_SHIFT, XK_c, ACTION_COPY);
+    add_or_update_keybinding(BIND_MOD_SUPER, XK_c, ACTION_COPY);
+    add_or_update_keybinding(BIND_MOD_CTRL, XK_Insert, ACTION_COPY);
+    add_or_update_keybinding(BIND_MOD_SUPER, XK_Insert, ACTION_COPY);
+
+    add_or_update_keybinding(BIND_MOD_CTRL | BIND_MOD_SHIFT, XK_v, ACTION_PASTE);
+    add_or_update_keybinding(BIND_MOD_SUPER, XK_v, ACTION_PASTE);
+    add_or_update_keybinding(BIND_MOD_SHIFT, XK_Insert, ACTION_PASTE);
+}
+
+static unsigned int state_to_sym_mods(unsigned int state) {
+    unsigned int sym_mods = 0;
+    if (state & ControlMask) sym_mods |= BIND_MOD_CTRL;
+    if (state & ShiftMask) sym_mods |= BIND_MOD_SHIFT;
+    if (state & alt_mod_mask) sym_mods |= BIND_MOD_ALT;
+    if (state & super_mod_mask) sym_mods |= BIND_MOD_SUPER;
+    if ((state & Mod3Mask) && super_mod_mask != Mod3Mask && alt_mod_mask != Mod3Mask) sym_mods |= BIND_MOD_MOD3;
+    if ((state & Mod5Mask) && super_mod_mask != Mod5Mask && alt_mod_mask != Mod5Mask) sym_mods |= BIND_MOD_MOD5;
+    return sym_mods;
+}
+
+static int match_keybinding(unsigned int state, KeySym ksym) {
+    unsigned int sym_mods = state_to_sym_mods(CLEAN_MASK(state));
+    for (int i = 0; i < keybinding_count; i++) {
+        if (keybindings[i].mods == sym_mods) {
+            KeySym bks = keybindings[i].ksym;
+            if (bks == ksym) return keybindings[i].action;
+            if (bks >= XK_a && bks <= XK_z && (ksym == bks || ksym == (bks - XK_a + XK_A))) {
+                return keybindings[i].action;
+            }
+            if (bks >= XK_A && bks <= XK_Z && (ksym == bks || ksym == (bks - XK_A + XK_a))) {
+                return keybindings[i].action;
+            }
+            if ((bks == XK_Insert || bks == XK_KP_Insert) && (ksym == XK_Insert || ksym == XK_KP_Insert)) {
+                return keybindings[i].action;
+            }
+            if ((bks == XK_Return || bks == XK_KP_Enter) && (ksym == XK_Return || ksym == XK_KP_Enter)) {
+                return keybindings[i].action;
+            }
+        }
+    }
+    return ACTION_NONE;
+}
+
+static void parse_keybind_line(const char *val) {
+    if (!val || !*val) return;
+    char buf[128];
+    strncpy(buf, val, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    char *sep = strchr(buf, '=');
+    if (!sep) sep = strchr(buf, ':');
+    char *action_str = NULL;
+    if (sep) {
+        *sep = '\0';
+        action_str = sep + 1;
+    } else {
+        char *sp = strrchr(buf, ' ');
+        if (sp) {
+            *sp = '\0';
+            action_str = sp + 1;
+        }
+    }
+    if (!action_str) return;
+    while (*action_str == ' ' || *action_str == '\t') action_str++;
+    char *act_end = action_str + strlen(action_str) - 1;
+    while (act_end >= action_str && (*act_end == ' ' || *act_end == '\t')) { *act_end = '\0'; act_end--; }
+
+    int act = ACTION_NONE;
+    if (strcasecmp(action_str, "copy") == 0 || strcasecmp(action_str, "copy_to_clipboard") == 0) {
+        act = ACTION_COPY;
+    } else if (strcasecmp(action_str, "paste") == 0 || strcasecmp(action_str, "paste_from_clipboard") == 0) {
+        act = ACTION_PASTE;
+    } else if (strcasecmp(action_str, "none") == 0 || strcasecmp(action_str, "unbind") == 0 || strcasecmp(action_str, "disabled") == 0) {
+        act = ACTION_NONE;
+    } else {
+        return;
+    }
+
+    unsigned int mods = 0;
+    KeySym ksym = NoSymbol;
+    if (parse_key_combo(buf, &mods, &ksym)) {
+        add_or_update_keybinding(mods, ksym, act);
+    }
+}
+
+static void parse_key_list(const char *val, int action) {
+    if (!val) return;
+    clear_keybindings_for_action(action);
+    char buf[256];
+    strncpy(buf, val, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    char *saveptr = NULL;
+    char *token = strtok_r(buf, ",", &saveptr);
+    while (token) {
+        unsigned int mods = 0;
+        KeySym ksym = NoSymbol;
+        if (parse_key_combo(token, &mods, &ksym)) {
+            add_or_update_keybinding(mods, ksym, action);
+        }
+        token = strtok_r(NULL, ",", &saveptr);
+    }
+}
 
 // FreeType & Glyph Cache
 static FT_Library ft_lib;
@@ -1154,6 +1431,9 @@ static void handle_csi_internal(Terminal *t, unsigned char final_char, int is_li
         case 'q':
             if (p1 >= 0 && p1 <= 6) {
                 cursor_style = p1;
+                if (p1 == 0) cursor_blink_enabled = default_cursor_blink;
+                else if (p1 == 1 || p1 == 3 || p1 == 5) cursor_blink_enabled = 1;
+                else if (p1 == 2 || p1 == 4 || p1 == 6) cursor_blink_enabled = 0;
                 if (is_live) dirty_all = 1;
             }
             break;
@@ -1608,8 +1888,8 @@ static void copy_selection_text(void) {
 }
 
 static void reflow_terminal(void) {
-    int new_cols = (win_w - PADDING * 2) / char_w;
-    int new_rows = (win_h - PADDING * 2) / char_h;
+    int new_cols = (win_w - padding_x * 2) / char_w;
+    int new_rows = (win_h - padding_y * 2) / char_h;
     if (new_cols < 4) new_cols = 4;
     if (new_rows < 2) new_rows = 2;
 
@@ -1693,10 +1973,10 @@ static void update_wm_normal_hints(void) {
     hints->flags = PResizeInc | PBaseSize | PMinSize;
     hints->width_inc = char_w;
     hints->height_inc = char_h;
-    hints->base_width = PADDING * 2;
-    hints->base_height = PADDING * 2;
-    hints->min_width = PADDING * 2 + char_w * 4;
-    hints->min_height = PADDING * 2 + char_h * 2;
+    hints->base_width = padding_x * 2;
+    hints->base_height = padding_y * 2;
+    hints->min_width = padding_x * 2 + char_w * 4;
+    hints->min_height = padding_y * 2 + char_h * 2;
     XSetWMNormalHints(dpy, win, hints);
     XFree(hints);
 }
@@ -1765,7 +2045,7 @@ static void render_frame(void) {
         dirty[r] = 0;
         rendered_any = 1;
 
-        int cell_y0 = PADDING + r * char_h;
+        int cell_y0 = padding_y + r * char_h;
         int y_end = cell_y0 + char_h;
         if (cell_y0 < min_dirty_y) min_dirty_y = (cell_y0 >= 0) ? cell_y0 : 0;
         if (y_end > max_dirty_y) max_dirty_y = (y_end <= win_h) ? y_end : win_h;
@@ -1810,7 +2090,7 @@ static void render_frame(void) {
             for (size_t c = 0; c < strlen(hud_text) && (int)c < cols; c++) {
                 CachedGlyph *g = get_glyph((unsigned char)hud_text[c]);
                 if (g && g->bitmap) {
-                    int cell_x0 = PADDING + c * char_w;
+                    int cell_x0 = padding_x + c * char_w;
                     int base_y = cell_y0 + ascender_px;
                     int gx = cell_x0 + g->left;
                     int gy = base_y - g->top;
@@ -1842,7 +2122,7 @@ static void render_frame(void) {
             }
 
             int span_w = (cell.flags & FLAG_WIDE) ? (char_w * 2) : char_w;
-            int cur_visible = replay_mode ? 1 : live_term.cursor_visible;
+            int cur_visible = replay_mode ? 1 : (live_term.cursor_visible && (!cursor_blink_enabled || cursor_blink_state));
             int is_cursor = (!replay_mode && cur_visible && scroll_offset == 0 && r == cur_cy && c == cur_cx);
             int selected = is_selected(r, c);
 
@@ -1857,14 +2137,15 @@ static void render_frame(void) {
                 fg = COLOR_SEL_FG;
             }
 
-            int draw_bar_cursor = (is_cursor && (cursor_style == 0 || cursor_style == 5 || cursor_style == 6));
-            int draw_underline_cursor = (is_cursor && (cursor_style == 3 || cursor_style == 4));
+            int eff_style = (cursor_style == 0) ? default_cursor_style : cursor_style;
+            int draw_bar_cursor = (is_cursor && (eff_style == 5 || eff_style == 6));
+            int draw_underline_cursor = (is_cursor && (eff_style == 3 || eff_style == 4));
             if (is_cursor && !draw_bar_cursor && !draw_underline_cursor) {
                 bg = COLOR_CURSOR;
                 fg = COLOR_BG;
             }
 
-            int cell_x0 = PADDING + c * char_w;
+            int cell_x0 = padding_x + c * char_w;
 
             if (bg != COLOR_BG || is_cursor || selected) {
                 for (int y = 0; y < char_h; y++) {
@@ -1998,8 +2279,8 @@ static void render_frame(void) {
     }
 
     if (dirty_all) {
-        int top_h = PADDING;
-        int bot_y = PADDING + rows * char_h;
+        int top_h = padding_y;
+        int bot_y = padding_y + rows * char_h;
         for (int y = 0; y < top_h && y < win_h; y++) {
             for (int x = 0; x < win_w; x++) {
                 pixels[y * win_w + x] = COLOR_BG;
@@ -2008,6 +2289,18 @@ static void render_frame(void) {
         if (bot_y < win_h && bot_y >= 0) {
             for (int y = bot_y; y < win_h; y++) {
                 for (int x = 0; x < win_w; x++) {
+                    pixels[y * win_w + x] = COLOR_BG;
+                }
+            }
+        }
+        int left_w = padding_x;
+        int right_x = padding_x + cols * char_w;
+        for (int y = top_h; y < bot_y && y < win_h; y++) {
+            for (int x = 0; x < left_w && x < win_w; x++) {
+                pixels[y * win_w + x] = COLOR_BG;
+            }
+            if (right_x < win_w && right_x >= 0) {
+                for (int x = right_x; x < win_w; x++) {
                     pixels[y * win_w + x] = COLOR_BG;
                 }
             }
@@ -2226,7 +2519,50 @@ static void load_config_from_file(const char *config_path) {
             if (r >= 4 && r <= 200) rows = r;
         } else if (strcasecmp(key, "padding") == 0 || strcasecmp(key, "pad") == 0) {
             int p = atoi(clean_val);
-            if (p >= 0 && p <= 100) padding = p;
+            if (p >= 0 && p <= 100) {
+                padding = p;
+                padding_x = p;
+                padding_y = p;
+            }
+        } else if (strcasecmp(key, "padding_x") == 0 || strcasecmp(key, "padding-x") == 0 ||
+                   strcasecmp(key, "window-padding-x") == 0 || strcasecmp(key, "window_padding_x") == 0) {
+            int p = atoi(clean_val);
+            if (p >= 0 && p <= 100) padding_x = p;
+        } else if (strcasecmp(key, "padding_y") == 0 || strcasecmp(key, "padding-y") == 0 ||
+                   strcasecmp(key, "window-padding-y") == 0 || strcasecmp(key, "window_padding_y") == 0) {
+            int p = atoi(clean_val);
+            if (p >= 0 && p <= 100) padding_y = p;
+        } else if (strcasecmp(key, "cursor_style") == 0 || strcasecmp(key, "cursor-style") == 0 ||
+                   strcasecmp(key, "cursor_shape") == 0 || strcasecmp(key, "cursorshape") == 0) {
+            if (strcasecmp(clean_val, "bar") == 0 || strcasecmp(clean_val, "beam") == 0 || strcasecmp(clean_val, "line") == 0) {
+                cursor_style = 6;
+                default_cursor_style = 6;
+            } else if (strcasecmp(clean_val, "block") == 0) {
+                cursor_style = 2;
+                default_cursor_style = 2;
+            } else if (strcasecmp(clean_val, "underline") == 0) {
+                cursor_style = 4;
+                default_cursor_style = 4;
+            }
+        } else if (strcasecmp(key, "cursor_blink") == 0 || strcasecmp(key, "cursor-blink") == 0 ||
+                   strcasecmp(key, "cursor-style-blink") == 0 || strcasecmp(key, "cursor_style_blink") == 0) {
+            if (strcasecmp(clean_val, "true") == 0 || strcasecmp(clean_val, "1") == 0 ||
+                strcasecmp(clean_val, "yes") == 0 || strcasecmp(clean_val, "on") == 0) {
+                cursor_blink_enabled = 1;
+                default_cursor_blink = 1;
+            } else if (strcasecmp(clean_val, "false") == 0 || strcasecmp(clean_val, "0") == 0 ||
+                       strcasecmp(clean_val, "no") == 0 || strcasecmp(clean_val, "off") == 0) {
+                cursor_blink_enabled = 0;
+                default_cursor_blink = 0;
+            }
+        } else if (strcasecmp(key, "keybind") == 0 || strcasecmp(key, "keybinding") == 0 || strcasecmp(key, "bind") == 0) {
+            parse_keybind_line(clean_val);
+        } else if (strcasecmp(key, "copy_keys") == 0 || strcasecmp(key, "copy_key") == 0 ||
+                   strcasecmp(key, "copy-keys") == 0 || strcasecmp(key, "copy-key") == 0) {
+            parse_key_list(clean_val, ACTION_COPY);
+        } else if (strcasecmp(key, "paste_keys") == 0 || strcasecmp(key, "paste_key") == 0 ||
+                   strcasecmp(key, "paste-keys") == 0 || strcasecmp(key, "paste-key") == 0) {
+            parse_key_list(clean_val, ACTION_PASTE);
         }
     }
     fclose(f);
@@ -2270,15 +2606,16 @@ static int resolve_theme_path(char *out_path, size_t max_len) {
         }
     }
 
-    // 2. Omarchy active theme: ~/.local/state/omarchy/current/theme/colors.toml or ghostty.conf
-    if (home && *home) {
-        snprintf(path, sizeof(path), "%s/.local/state/omarchy/current/theme/colors.toml", home);
+    // 2. Active desktop session theme: ~/.local/state/$DESKTOP_SESSION/current/theme/colors.toml or ghostty.conf
+    const char *desktop_session = getenv("DESKTOP_SESSION");
+    if (home && *home && desktop_session && *desktop_session) {
+        snprintf(path, sizeof(path), "%s/.local/state/%s/current/theme/colors.toml", home, desktop_session);
         if (access(path, R_OK) == 0) {
             strncpy(out_path, path, max_len - 1);
             out_path[max_len - 1] = '\0';
             return 1;
         }
-        snprintf(path, sizeof(path), "%s/.local/state/omarchy/current/theme/ghostty.conf", home);
+        snprintf(path, sizeof(path), "%s/.local/state/%s/current/theme/ghostty.conf", home, desktop_session);
         if (access(path, R_OK) == 0) {
             strncpy(out_path, path, max_len - 1);
             out_path[max_len - 1] = '\0';
@@ -2606,6 +2943,7 @@ static void configure_child_env(void) {
 int main(int argc, char *argv[]) {
     setlocale(LC_ALL, "");
     init_gamma_lut();
+    init_default_keybindings();
     const char *opt_title = NULL;
     const char *opt_dir = NULL;
     char **cmd_argv = NULL;
@@ -2668,10 +3006,10 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             int p = atoi(argv[++i]);
-            if (p >= 0 && p <= 100) padding = p;
+            if (p >= 0 && p <= 100) { padding = p; padding_x = p; padding_y = p; }
         } else if (strncmp(argv[i], "--padding=", 10) == 0) {
             int p = atoi(argv[i] + 10);
-            if (p >= 0 && p <= 100) padding = p;
+            if (p >= 0 && p <= 100) { padding = p; padding_x = p; padding_y = p; }
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
             printf("dwmterm %s\n", VERSION);
             return 0;
@@ -2715,6 +3053,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Cannot open X display\n");
         return 1;
     }
+    detect_modifier_masks(dpy);
     update_display_dpi(dpy);
 
     if (FT_Init_FreeType(&ft_lib)) {
@@ -2850,8 +3189,8 @@ int main(int argc, char *argv[]) {
     if (char_w <= 0) char_w = 8;
     if (char_h <= 0) char_h = 16;
 
-    win_w = cols * char_w + PADDING * 2;
-    win_h = rows * char_h + PADDING * 2;
+    win_w = cols * char_w + padding_x * 2;
+    win_h = rows * char_h + padding_y * 2;
     term_init(&live_term, cols, rows);
     term_init(&replay_term, cols, rows);
 
@@ -2960,6 +3299,15 @@ int main(int argc, char *argv[]) {
             }
         }
 
+        if (cursor_blink_enabled && !replay_mode && live_term.cursor_visible) {
+            uint64_t now_blink = get_time_us();
+            if (now_blink - last_cursor_blink_us >= 500000ULL) {
+                last_cursor_blink_us = now_blink;
+                cursor_blink_state = !cursor_blink_state;
+                dirty_all = 1;
+            }
+        }
+
         render_frame();
 
         int status;
@@ -2981,6 +3329,10 @@ int main(int argc, char *argv[]) {
         if (ret < 0 && errno == EINTR) continue;
 
         if (fds[0].revents & POLLIN) {
+            if (cursor_blink_enabled) {
+                cursor_blink_state = 1;
+                last_cursor_blink_us = get_time_us();
+            }
             char buf[16384];
             ssize_t n;
             while ((n = read(pty_master, buf, sizeof(buf))) > 0) {
@@ -3021,6 +3373,12 @@ int main(int argc, char *argv[]) {
                 char kbuf[32];
                 KeySym ksym;
                 int len = XLookupString(&ev.xkey, kbuf, sizeof(kbuf), &ksym, NULL);
+                unsigned int state = CLEAN_MASK(ev.xkey.state);
+
+                if (cursor_blink_enabled) {
+                    cursor_blink_state = 1;
+                    last_cursor_blink_us = get_time_us();
+                }
 
                 if (hud_message[0] != '\0') {
                     hud_message[0] = '\0';
@@ -3029,7 +3387,7 @@ int main(int argc, char *argv[]) {
                 }
 
                 // Toggle Replay Mode with F1 or Ctrl+Shift+R
-                if (ksym == XK_F1 || ((ev.xkey.state & ControlMask) && (ev.xkey.state & ShiftMask) && (ksym == XK_R || ksym == XK_r))) {
+                if (ksym == XK_F1 || ((state & ControlMask) && (state & ShiftMask) && (ksym == XK_R || ksym == XK_r))) {
                     replay_mode = !replay_mode;
                     if (replay_mode) {
                         scroll_offset = 0;
@@ -3046,9 +3404,9 @@ int main(int argc, char *argv[]) {
                         replay_mode = 0;
                         dirty_all = 1;
                     } else if (ksym == XK_Left || ksym == XK_h) {
-                        scrub_to_chunk(replay_chunk_idx - ((ev.xkey.state & ShiftMask) ? 10 : 1));
+                        scrub_to_chunk(replay_chunk_idx - ((state & ShiftMask) ? 10 : 1));
                     } else if (ksym == XK_Right || ksym == XK_l) {
-                        scrub_to_chunk(replay_chunk_idx + ((ev.xkey.state & ShiftMask) ? 10 : 1));
+                        scrub_to_chunk(replay_chunk_idx + ((state & ShiftMask) ? 10 : 1));
                     } else if (ksym == XK_Home || ksym == XK_0) {
                         scrub_to_chunk(0);
                     } else if (ksym == XK_End || ksym == XK_dollar) {
@@ -3060,7 +3418,7 @@ int main(int argc, char *argv[]) {
                 }
 
                 // Font Zooming via Ctrl+Plus / Ctrl+Minus / Ctrl+0
-                if (ev.xkey.state & ControlMask) {
+                if (state & ControlMask) {
                     if (ksym == XK_equal || ksym == XK_plus || ksym == XK_KP_Add) {
                         set_font_size(font_pt + 2);
                         continue;
@@ -3070,23 +3428,21 @@ int main(int argc, char *argv[]) {
                     } else if (ksym == XK_0 || ksym == XK_KP_0) {
                         set_font_size(default_font_pt);
                         continue;
-                    } else if ((ev.xkey.state & ShiftMask) && (ksym == XK_C || ksym == XK_c)) {
-                        copy_selection_text();
-                        continue;
-                    } else if ((ev.xkey.state & ShiftMask) && (ksym == XK_V || ksym == XK_v)) {
-                        XConvertSelection(dpy, atom_clipboard, atom_utf8, atom_sel_data, win, CurrentTime);
-                        continue;
                     }
                 }
 
-                // Shift+Insert paste
-                if ((ev.xkey.state & ShiftMask) && ksym == XK_Insert) {
+                // Configurable keybindings: Copy, Paste, etc.
+                int act = match_keybinding(state, ksym);
+                if (act == ACTION_COPY) {
+                    copy_selection_text();
+                    continue;
+                } else if (act == ACTION_PASTE) {
                     XConvertSelection(dpy, atom_clipboard, atom_utf8, atom_sel_data, win, CurrentTime);
                     continue;
                 }
 
                 // Scrollback navigation via Shift+PageUp / Shift+PageDown
-                if (ev.xkey.state & ShiftMask) {
+                if (state & ShiftMask) {
                     if (ksym == XK_Page_Up && !live_term.is_alt_screen) {
                         scroll_offset += rows / 2;
                         if (scroll_offset > hist_count) scroll_offset = hist_count;
@@ -3112,7 +3468,17 @@ int main(int argc, char *argv[]) {
                     dirty_all = 1;
                 }
 
-                if (ksym == XK_BackSpace || (len == 1 && (unsigned char)kbuf[0] == 0x08)) {
+                if (ksym == XK_Return || ksym == XK_KP_Enter) {
+                    if ((state & ShiftMask) && (state & Mod1Mask)) {
+                        pty_write(pty_master, "\x1b[13;4u", 7);
+                    } else if (state & ShiftMask) {
+                        pty_write(pty_master, "\x1b[13;2u", 7);
+                    } else if (state & Mod1Mask) {
+                        pty_write(pty_master, "\x1b\r", 2);
+                    } else {
+                        pty_write(pty_master, "\r", 1);
+                    }
+                } else if (ksym == XK_BackSpace || (len == 1 && (unsigned char)kbuf[0] == 0x08)) {
                     pty_write(pty_master, "\x7f", 1);
                 } else if (ksym == XK_Delete) {
                     pty_write(pty_master, "\x1b[3~", 4);
@@ -3129,16 +3495,15 @@ int main(int argc, char *argv[]) {
                 } else if (len > 0) {
                     pty_write(pty_master, kbuf, len);
                 } else {
-                    if (ksym == XK_Return) pty_write(pty_master, "\r", 1);
-                    else if (ksym == XK_Up) pty_write(pty_master, app_cursor_keys ? "\x1bOA" : "\x1b[A", 3);
+                    if (ksym == XK_Up) pty_write(pty_master, app_cursor_keys ? "\x1bOA" : "\x1b[A", 3);
                     else if (ksym == XK_Down) pty_write(pty_master, app_cursor_keys ? "\x1bOB" : "\x1b[B", 3);
                     else if (ksym == XK_Right) pty_write(pty_master, app_cursor_keys ? "\x1bOC" : "\x1b[C", 3);
                     else if (ksym == XK_Left) pty_write(pty_master, app_cursor_keys ? "\x1bOD" : "\x1b[D", 3);
                 }
             } else if (ev.type == ButtonPress) {
                 if (replay_mode) continue;
-                int c = (ev.xbutton.x - PADDING) / char_w;
-                int r = (ev.xbutton.y - PADDING) / char_h;
+                int c = (ev.xbutton.x - padding_x) / char_w;
+                int r = (ev.xbutton.y - padding_y) / char_h;
                 if (c < 0) c = 0;
                 if (c >= cols) c = cols - 1;
                 if (r < 0) r = 0;
@@ -3196,8 +3561,8 @@ int main(int argc, char *argv[]) {
                     }
                 }
             } else if (ev.type == MotionNotify && !replay_mode) {
-                int c = (ev.xmotion.x - PADDING) / char_w;
-                int r = (ev.xmotion.y - PADDING) / char_h;
+                int c = (ev.xmotion.x - padding_x) / char_w;
+                int r = (ev.xmotion.y - padding_y) / char_h;
                 if (c < 0) c = 0;
                 if (c >= cols) c = cols - 1;
                 if (r < 0) r = 0;
@@ -3236,8 +3601,8 @@ int main(int argc, char *argv[]) {
                     }
                 }
             } else if (ev.type == ButtonRelease && !replay_mode) {
-                int c = (ev.xbutton.x - PADDING) / char_w;
-                int r = (ev.xbutton.y - PADDING) / char_h;
+                int c = (ev.xbutton.x - padding_x) / char_w;
+                int r = (ev.xbutton.y - padding_y) / char_h;
                 if (c < 0) c = 0;
                 if (c >= cols) c = cols - 1;
                 if (r < 0) r = 0;

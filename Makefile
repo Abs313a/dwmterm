@@ -81,7 +81,7 @@ test: test_terminal.c main.c
 	@rm -f test_terminal
 
 clean:
-	rm -f $(BIN) miniterm test_terminal *.o
+	rm -f -- $(BIN) miniterm test_terminal *.o
 	rm -rf dist dwmterm-v*
 
 dist:

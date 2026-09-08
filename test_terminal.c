@@ -358,10 +358,10 @@ static void test_theme_color_parsing(void) {
     TEST_PASS();
 }
 
-static void test_omarchy_colors_toml_parsing(void) {
+static void test_toml_theme_colors_parsing(void) {
     tests_run++;
 
-    char tmp_file[] = "/tmp/dwmterm_omarchy_test_XXXXXX";
+    char tmp_file[] = "/tmp/dwmterm_toml_theme_XXXXXX";
     int fd = mkstemp(tmp_file);
     assert(fd >= 0);
     FILE *f = fdopen(fd, "w");
@@ -518,22 +518,23 @@ static void test_theme_discovery_cascade(void) {
     // 1. Initially empty: fallback to built-in default
     assert(resolve_theme_path(resolved, sizeof(resolved)) == 0);
 
-    // 2. Omarchy colors.toml
-    char omarchy_dir[1024];
-    snprintf(omarchy_dir, sizeof(omarchy_dir), "%s/.local/state/omarchy/current/theme", fake_home);
+    // 2. Desktop session state colors.toml
+    char session_theme_dir[1024];
+    setenv("DESKTOP_SESSION", "test_session", 1);
+    snprintf(session_theme_dir, sizeof(session_theme_dir), "%s/.local/state/test_session/current/theme", fake_home);
     char cmd[PATH_MAX * 4];
-    snprintf(cmd, sizeof(cmd), "mkdir -p %s", omarchy_dir);
+    snprintf(cmd, sizeof(cmd), "mkdir -p %s", session_theme_dir);
     int rc = system(cmd);
     (void)rc;
-    char omarchy_file[PATH_MAX];
-    snprintf(omarchy_file, sizeof(omarchy_file), "%s/colors.toml", omarchy_dir);
-    FILE *f1 = fopen(omarchy_file, "w");
+    char session_theme_file[PATH_MAX];
+    snprintf(session_theme_file, sizeof(session_theme_file), "%s/colors.toml", session_theme_dir);
+    FILE *f1 = fopen(session_theme_file, "w");
     assert(f1 != NULL);
     fprintf(f1, "background = \"#101315\"\n");
     fclose(f1);
 
     assert(resolve_theme_path(resolved, sizeof(resolved)) == 1);
-    assert(strcmp(resolved, omarchy_file) == 0);
+    assert(strcmp(resolved, session_theme_file) == 0);
 
     // 3. User override in $XDG_CONFIG_HOME/dwmterm/colors has higher priority
     char dwmterm_dir[1024];
@@ -552,7 +553,7 @@ static void test_theme_discovery_cascade(void) {
     // Cleanup
     unlink(override_file);
     rmdir(dwmterm_dir);
-    unlink(omarchy_file);
+    unlink(session_theme_file);
     snprintf(cmd, sizeof(cmd), "rm -rf %s", tmp_dir);
     rc = system(cmd);
     (void)rc;
@@ -1014,6 +1015,199 @@ static void test_decscusr_cursor_style(void) {
     TEST_PASS();
 }
 
+static void test_padding_xy_config_parsing(void) {
+    tests_run++;
+
+    char tmp_file[] = "/tmp/dwmterm_padding_test_XXXXXX";
+    int fd = mkstemp(tmp_file);
+    assert(fd >= 0);
+    FILE *f = fdopen(fd, "w");
+    assert(f != NULL);
+
+    fprintf(f, "# Independent padding\n");
+    fprintf(f, "padding_x = 18\n");
+    fprintf(f, "padding_y = 10\n");
+    fclose(f);
+
+    padding_x = DEFAULT_PADDING;
+    padding_y = DEFAULT_PADDING;
+    load_config_from_file(tmp_file);
+    assert(padding_x == 18);
+    assert(padding_y == 10);
+    unlink(tmp_file);
+
+    // Test window-padding-x and window-padding-y aliases
+    char tmp_file2[] = "/tmp/dwmterm_padding_alias_XXXXXX";
+    fd = mkstemp(tmp_file2);
+    assert(fd >= 0);
+    f = fdopen(fd, "w");
+    assert(f != NULL);
+    fprintf(f, "window-padding-x = 14\n");
+    fprintf(f, "window-padding-y = 16\n");
+    fclose(f);
+
+    load_config_from_file(tmp_file2);
+    assert(padding_x == 14);
+    assert(padding_y == 16);
+    unlink(tmp_file2);
+
+    // Test single padding key sets both
+    char tmp_file3[] = "/tmp/dwmterm_padding_single_XXXXXX";
+    fd = mkstemp(tmp_file3);
+    assert(fd >= 0);
+    f = fdopen(fd, "w");
+    assert(f != NULL);
+    fprintf(f, "padding = 22\n");
+    fclose(f);
+
+    load_config_from_file(tmp_file3);
+    assert(padding_x == 22);
+    assert(padding_y == 22);
+    unlink(tmp_file3);
+
+    padding_x = DEFAULT_PADDING;
+    padding_y = DEFAULT_PADDING;
+    padding = DEFAULT_PADDING;
+
+    TEST_PASS();
+}
+
+static void test_cursor_config_parsing(void) {
+    tests_run++;
+
+    char tmp_file[] = "/tmp/dwmterm_cursor_test_XXXXXX";
+    int fd = mkstemp(tmp_file);
+    assert(fd >= 0);
+    FILE *f = fdopen(fd, "w");
+    assert(f != NULL);
+
+    fprintf(f, "cursor_style = block\n");
+    fprintf(f, "cursor_blink = true\n");
+    fclose(f);
+
+    cursor_style = 6;
+    cursor_blink_enabled = 0;
+    load_config_from_file(tmp_file);
+    assert(cursor_style == 2);
+    assert(cursor_blink_enabled == 1);
+    unlink(tmp_file);
+
+    // Test bar, underline, and cursor-style-blink aliases
+    char tmp_file2[] = "/tmp/dwmterm_cursor_test2_XXXXXX";
+    fd = mkstemp(tmp_file2);
+    assert(fd >= 0);
+    f = fdopen(fd, "w");
+    assert(f != NULL);
+    fprintf(f, "cursor-style = underline\n");
+    fprintf(f, "cursor-style-blink = false\n");
+    fclose(f);
+
+    load_config_from_file(tmp_file2);
+    assert(cursor_style == 4);
+    assert(cursor_blink_enabled == 0);
+    unlink(tmp_file2);
+
+    char tmp_file3[] = "/tmp/dwmterm_cursor_test3_XXXXXX";
+    fd = mkstemp(tmp_file3);
+    assert(fd >= 0);
+    f = fdopen(fd, "w");
+    assert(f != NULL);
+    fprintf(f, "cursor-style = bar\n");
+    fclose(f);
+
+    load_config_from_file(tmp_file3);
+    assert(cursor_style == 6);
+    unlink(tmp_file3);
+
+    cursor_style = 6;
+    cursor_blink_enabled = 0;
+
+    TEST_PASS();
+}
+
+static void test_clean_mask_and_csi_u_keybindings(void) {
+    tests_run++;
+
+    // Verify CLEAN_MASK strips NumLock (Mod2Mask) and CapsLock (LockMask)
+    unsigned int raw_state = ControlMask | LockMask | Mod2Mask;
+    assert(CLEAN_MASK(raw_state) == ControlMask);
+
+    raw_state = ShiftMask | Mod4Mask | Mod2Mask;
+    assert(CLEAN_MASK(raw_state) == (ShiftMask | Mod4Mask));
+
+    raw_state = ShiftMask | Mod1Mask | LockMask;
+    assert(CLEAN_MASK(raw_state) == (ShiftMask | Mod1Mask));
+
+    TEST_PASS();
+}
+
+static void test_keybind_config_and_super_mod(void) {
+    tests_run++;
+
+    // 1. Check default keybindings
+    init_default_keybindings();
+    super_mod_mask = Mod4Mask;
+    alt_mod_mask = Mod1Mask;
+
+    assert(match_keybinding(ControlMask | ShiftMask, XK_c) == ACTION_COPY);
+    assert(match_keybinding(ControlMask | ShiftMask, XK_C) == ACTION_COPY);
+    assert(match_keybinding(Mod4Mask, XK_c) == ACTION_COPY);
+    assert(match_keybinding(Mod4Mask, XK_C) == ACTION_COPY);
+    assert(match_keybinding(ControlMask, XK_Insert) == ACTION_COPY);
+
+    assert(match_keybinding(ControlMask | ShiftMask, XK_v) == ACTION_PASTE);
+    assert(match_keybinding(Mod4Mask, XK_v) == ACTION_PASTE);
+    assert(match_keybinding(ShiftMask, XK_Insert) == ACTION_PASTE);
+
+    // Modifier noise (Mod2/LockMask) should still match
+    assert(match_keybinding(Mod4Mask | Mod2Mask | LockMask, XK_v) == ACTION_PASTE);
+
+    // 2. Parse custom config file with keybind directives
+    char tmp_file[] = "/tmp/dwmterm_keybind_test_XXXXXX";
+    int fd = mkstemp(tmp_file);
+    assert(fd >= 0);
+    FILE *f = fdopen(fd, "w");
+    assert(f != NULL);
+
+    fprintf(f, "keybind = super+x = copy\n");
+    fprintf(f, "keybind = mod+y : paste\n");
+    fprintf(f, "keybind = ctrl+shift+z = none\n");
+    fprintf(f, "keybind = super+c = none\n");
+    fclose(f);
+
+    load_config_from_file(tmp_file);
+    unlink(tmp_file);
+
+    // Verify custom binds
+    assert(match_keybinding(Mod4Mask, XK_x) == ACTION_COPY);
+    assert(match_keybinding(Mod4Mask, XK_y) == ACTION_PASTE);
+    assert(match_keybinding(Mod4Mask, XK_c) == ACTION_NONE);
+
+    // 3. Test list syntax: copy_keys and paste_keys
+    char tmp_file2[] = "/tmp/dwmterm_keybind_test2_XXXXXX";
+    fd = mkstemp(tmp_file2);
+    assert(fd >= 0);
+    f = fdopen(fd, "w");
+    assert(f != NULL);
+
+    fprintf(f, "copy_keys = super+c, alt+w\n");
+    fprintf(f, "paste_keys = super+v, ctrl+y\n");
+    fclose(f);
+
+    load_config_from_file(tmp_file2);
+    unlink(tmp_file2);
+
+    assert(match_keybinding(Mod4Mask, XK_c) == ACTION_COPY);
+    assert(match_keybinding(Mod1Mask, XK_w) == ACTION_COPY);
+    assert(match_keybinding(Mod4Mask, XK_v) == ACTION_PASTE);
+    assert(match_keybinding(ControlMask, XK_y) == ACTION_PASTE);
+
+    // Reset defaults
+    init_default_keybindings();
+
+    TEST_PASS();
+}
+
 int main(void) {
     setlocale(LC_ALL, "");
     printf("====================================================\n");
@@ -1031,7 +1225,7 @@ int main(void) {
     test_utf8_decoding();
     test_sgr_color_parsing();
     test_theme_color_parsing();
-    test_omarchy_colors_toml_parsing();
+    test_toml_theme_colors_parsing();
     test_ghostty_conf_parsing();
     test_titus_themes_toml_parsing();
     test_theme_discovery_cascade();
@@ -1049,6 +1243,10 @@ int main(void) {
     test_mouse_mode_and_sgr_toggles();
     test_bracketed_paste_toggle();
     test_decscusr_cursor_style();
+    test_padding_xy_config_parsing();
+    test_cursor_config_parsing();
+    test_clean_mask_and_csi_u_keybindings();
+    test_keybind_config_and_super_mod();
 
     printf("====================================================\n");
     printf("All %d/%d tests passed successfully!\n", tests_passed, tests_run);
