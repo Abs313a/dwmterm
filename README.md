@@ -14,7 +14,10 @@
 </p>
 
 <p align="center">
-  <img src="assets/dwmterm.png" alt="DWM-Terminal Screenshot" width="900">
+  <img src="assets/11.png" alt="DWM-Terminal Default" width="900">
+</p>
+<p align="center">
+  <img src="assets/22.png" alt="DWM-Terminal Customized" width="900">
 </p>
 
 ---
