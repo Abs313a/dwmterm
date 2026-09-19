@@ -908,8 +908,9 @@ static void test_csi_line_editing_outside_margins_is_noop(void) {
         }
     }
 
-    /* Rows 3 through 6 are the scrolling region; the cursor stays in row 2. */
+    /* Rows 3 through 6 are the scrolling region. */
     feed_bytes(&term, "\x1b[3;6r\x1b[2;1H\x1b[L\x1b[M");
+    feed_bytes(&term, "\x1b[8;1H\x1b[L\x1b[M");
 
     for (int r = 0; r < term.rows; r++) {
         assert(term.grid[r * term.cols].codepoint == (uint32_t)('A' + r));
