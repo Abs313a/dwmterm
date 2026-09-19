@@ -155,6 +155,7 @@ typedef struct {
     int cols, rows;
     int cursor_x, cursor_y;
     int saved_cursor_x, saved_cursor_y;
+    int top_margin, bottom_margin;
     int cursor_visible;
     uint32_t cur_fg, cur_bg;
     uint8_t cur_flags;
@@ -256,6 +257,10 @@ static int sel_active = 0;
 static int sel_start_c = -1, sel_start_r = -1;
 static int sel_end_c = -1, sel_end_r = -1;
 static char *sel_text = NULL;
+static Time last_click_time = 0;
+static int last_click_c = -1;
+static int last_click_r = -1;
+static int click_count = 0;
 
 static Atom atom_clipboard = 0;
 static Atom atom_utf8 = 0;
@@ -293,6 +298,10 @@ static KeyBinding keybindings[MAX_KEYBINDINGS];
 static int keybinding_count = 0;
 static unsigned int super_mod_mask = Mod4Mask;
 static unsigned int alt_mod_mask = Mod1Mask;
+
+static inline int is_modifier_keysym(KeySym ksym) {
+    return IsModifierKey(ksym) || ksym == XK_Scroll_Lock;
+}
 
 static void detect_modifier_masks(Display *d) {
     if (!d) return;
@@ -998,6 +1007,8 @@ static void term_init(Terminal *t, int c, int r) {
     memset(t, 0, sizeof(Terminal));
     t->cols = c;
     t->rows = r;
+    t->top_margin = 0;
+    t->bottom_margin = r - 1;
     t->primary_grid = calloc(c * r, sizeof(Cell));
     t->alt_grid = calloc(c * r, sizeof(Cell));
     for (int i = 0; i < c * r; i++) {
@@ -1018,23 +1029,74 @@ static void term_init(Terminal *t, int c, int r) {
     t->utf8_remain = 0;
 }
 
-static void term_scroll_internal(Terminal *t, int is_live) {
-    if (is_live && !t->is_alt_screen) {
-        if (history[hist_head] == NULL || hist_cols[hist_head] != cols) {
-            history[hist_head] = realloc(history[hist_head], cols * sizeof(Cell));
-            hist_cols[hist_head] = cols;
+static void term_scroll_up_internal(Terminal *t, int n, int is_live) {
+    int top = t->top_margin;
+    int bot = t->bottom_margin;
+    if (top < 0 || bot >= t->rows || top >= bot) {
+        top = 0;
+        bot = t->rows - 1;
+    }
+    if (n > bot - top + 1) n = bot - top + 1;
+    if (n <= 0) return;
+
+    if (top == 0 && bot == t->rows - 1 && is_live && !t->is_alt_screen) {
+        for (int step = 0; step < n; step++) {
+            if (history[hist_head] == NULL || hist_cols[hist_head] != t->cols) {
+                history[hist_head] = realloc(history[hist_head], (size_t)t->cols * sizeof(Cell));
+                hist_cols[hist_head] = t->cols;
+            }
+            memcpy(history[hist_head], &t->grid[step * t->cols], (size_t)t->cols * sizeof(Cell));
+            hist_head = (hist_head + 1) % MAX_HIST_LINES;
+            if (hist_count < MAX_HIST_LINES) hist_count++;
         }
-        memcpy(history[hist_head], &t->grid[0], cols * sizeof(Cell));
-        hist_head = (hist_head + 1) % MAX_HIST_LINES;
-        if (hist_count < MAX_HIST_LINES) hist_count++;
     }
 
-    memmove(&t->grid[0], &t->grid[cols], sizeof(Cell) * cols * (t->rows - 1));
-    for (int c = 0; c < cols; c++) {
-        t->grid[(t->rows - 1) * cols + c] = (Cell){' ', t->cur_fg, t->cur_bg, 0};
+    int lines_to_shift = (bot - top + 1) - n;
+    if (lines_to_shift > 0) {
+        memmove(&t->grid[top * t->cols], &t->grid[(top + n) * t->cols], (size_t)lines_to_shift * t->cols * sizeof(Cell));
     }
-    t->cursor_y = t->rows - 1;
+    for (int r = bot - n + 1; r <= bot; r++) {
+        for (int c = 0; c < t->cols; c++) {
+            t->grid[r * t->cols + c] = (Cell){' ', t->cur_fg, t->cur_bg, 0};
+        }
+        if (is_live) mark_line_dirty(r, t->rows);
+    }
     if (is_live) dirty_all = 1;
+}
+
+static void term_scroll_down_internal(Terminal *t, int n, int is_live) {
+    int top = t->top_margin;
+    int bot = t->bottom_margin;
+    if (top < 0 || bot >= t->rows || top >= bot) {
+        top = 0;
+        bot = t->rows - 1;
+    }
+    if (n > bot - top + 1) n = bot - top + 1;
+    if (n <= 0) return;
+
+    int lines_to_shift = (bot - top + 1) - n;
+    if (lines_to_shift > 0) {
+        memmove(&t->grid[(top + n) * t->cols], &t->grid[top * t->cols], (size_t)lines_to_shift * t->cols * sizeof(Cell));
+    }
+    for (int r = top; r < top + n; r++) {
+        for (int c = 0; c < t->cols; c++) {
+            t->grid[r * t->cols + c] = (Cell){' ', t->cur_fg, t->cur_bg, 0};
+        }
+        if (is_live) mark_line_dirty(r, t->rows);
+    }
+    if (is_live) dirty_all = 1;
+}
+
+
+static void term_linefeed_internal(Terminal *t, int is_live) {
+    int top = (t->top_margin >= 0 && t->top_margin < t->rows) ? t->top_margin : 0;
+    int bot = (t->bottom_margin > top && t->bottom_margin < t->rows) ? t->bottom_margin : t->rows - 1;
+    if (t->cursor_y == bot) {
+        term_scroll_up_internal(t, 1, is_live);
+    } else if (t->cursor_y < t->rows - 1) {
+        t->cursor_y++;
+        if (is_live) mark_line_dirty(t->cursor_y, t->rows);
+    }
 }
 
 static void handle_sgr_internal(Terminal *t) {
@@ -1426,7 +1488,7 @@ static void handle_csi_internal(Terminal *t, unsigned char final_char, int is_li
             break;
         }
         case 'm':
-            handle_sgr_internal(t);
+            if (!t->csi_private) handle_sgr_internal(t);
             break;
         case 'q':
             if (p1 >= 0 && p1 <= 6) {
@@ -1437,6 +1499,33 @@ static void handle_csi_internal(Terminal *t, unsigned char final_char, int is_li
                 if (is_live) dirty_all = 1;
             }
             break;
+        case 'S': {
+            int n = (p1 > 0) ? p1 : 1;
+            term_scroll_up_internal(t, n, is_live);
+            break;
+        }
+        case 'T': {
+            int n = (p1 > 0) ? p1 : 1;
+            term_scroll_down_internal(t, n, is_live);
+            break;
+        }
+        case 'r': {
+            if (!t->csi_private) {
+                int top = (p1 > 0) ? p1 - 1 : 0;
+                int bot = (p2 > 0) ? p2 - 1 : t->rows - 1;
+                if (top >= 0 && top < bot && bot < t->rows) {
+                    t->top_margin = top;
+                    t->bottom_margin = bot;
+                } else {
+                    t->top_margin = 0;
+                    t->bottom_margin = t->rows - 1;
+                }
+                t->cursor_x = 0;
+                t->cursor_y = 0;
+                if (is_live) mark_line_dirty(t->cursor_y, t->rows);
+            }
+            break;
+        }
         case 't':
             break;
     }
@@ -1448,9 +1537,7 @@ static void term_put_codepoint_internal(Terminal *t, uint32_t cp, int is_live) {
             t->cursor_x = 0;
             break;
         case '\n':
-            t->cursor_y++;
-            if (t->cursor_y >= t->rows) term_scroll_internal(t, is_live);
-            else if (is_live) mark_line_dirty(t->cursor_y, t->rows);
+            term_linefeed_internal(t, is_live);
             break;
         case '\b':
             if (t->cursor_x > 0) t->cursor_x--;
@@ -1460,9 +1547,7 @@ static void term_put_codepoint_internal(Terminal *t, uint32_t cp, int is_live) {
             t->cursor_x = (t->cursor_x + 8) & ~7;
             if (t->cursor_x >= t->cols) {
                 t->cursor_x = 0;
-                t->cursor_y++;
-                if (t->cursor_y >= t->rows) term_scroll_internal(t, is_live);
-                else if (is_live) mark_line_dirty(t->cursor_y, t->rows);
+                term_linefeed_internal(t, is_live);
             }
             break;
         default:
@@ -1477,8 +1562,7 @@ static void term_put_codepoint_internal(Terminal *t, uint32_t cp, int is_live) {
                 if (w == 2) {
                     if (t->cursor_x + 1 >= t->cols) {
                         t->cursor_x = 0;
-                        t->cursor_y++;
-                        if (t->cursor_y >= t->rows) term_scroll_internal(t, is_live);
+                        term_linefeed_internal(t, is_live);
                     }
                     if (t->cursor_x > 0 && (t->grid[t->cursor_y * t->cols + t->cursor_x].flags & FLAG_WIDE_DUMMY)) {
                         t->grid[t->cursor_y * t->cols + t->cursor_x - 1] = (Cell){' ', t->cur_fg, t->cur_bg, 0};
@@ -1492,8 +1576,7 @@ static void term_put_codepoint_internal(Terminal *t, uint32_t cp, int is_live) {
                 } else {
                     if (t->cursor_x >= t->cols) {
                         t->cursor_x = 0;
-                        t->cursor_y++;
-                        if (t->cursor_y >= t->rows) term_scroll_internal(t, is_live);
+                        term_linefeed_internal(t, is_live);
                     }
                     if (t->cursor_x > 0 && (t->grid[t->cursor_y * t->cols + t->cursor_x].flags & FLAG_WIDE_DUMMY)) {
                         t->grid[t->cursor_y * t->cols + t->cursor_x - 1] = (Cell){' ', t->cur_fg, t->cur_bg, 0};
@@ -1589,25 +1672,20 @@ static void term_put_byte_internal(Terminal *t, unsigned char c, int is_live) {
             } else if (c == '(' || c == ')' || c == '*' || c == '+' || c == '#' || c == '%') {
                 t->state = STATE_CHARSET;
             } else if (c == 'M') {
-                if (t->cursor_y > 0) {
+                int top = (t->top_margin >= 0 && t->top_margin < t->rows) ? t->top_margin : 0;
+                if (t->cursor_y == top) {
+                    term_scroll_down_internal(t, 1, is_live);
+                } else if (t->cursor_y > 0) {
                     t->cursor_y--;
                     if (is_live) mark_line_dirty(t->cursor_y, t->rows);
-                } else {
-                    memmove(&t->grid[t->cols], &t->grid[0], (size_t)(t->rows - 1) * t->cols * sizeof(Cell));
-                    for (int x = 0; x < t->cols; x++) t->grid[x] = (Cell){' ', t->cur_fg, t->cur_bg, 0};
-                    if (is_live) dirty_all = 1;
                 }
                 t->state = STATE_NORMAL;
             } else if (c == 'E') {
                 t->cursor_x = 0;
-                t->cursor_y++;
-                if (t->cursor_y >= t->rows) term_scroll_internal(t, is_live);
-                else if (is_live) mark_line_dirty(t->cursor_y, t->rows);
+                term_linefeed_internal(t, is_live);
                 t->state = STATE_NORMAL;
             } else if (c == 'D') {
-                t->cursor_y++;
-                if (t->cursor_y >= t->rows) term_scroll_internal(t, is_live);
-                else if (is_live) mark_line_dirty(t->cursor_y, t->rows);
+                term_linefeed_internal(t, is_live);
                 t->state = STATE_NORMAL;
             } else if (c == '7') {
                 t->saved_cursor_x = t->cursor_x;
@@ -1628,8 +1706,8 @@ static void term_put_byte_internal(Terminal *t, unsigned char c, int is_live) {
             break;
 
         case STATE_CSI:
-            if (c == '?') {
-                t->csi_private = 1;
+            if (c == '?' || c == '>' || c == '<' || c == '=') {
+                t->csi_private = c;
             } else if (c >= '0' && c <= '9') {
                 t->csi_params[t->csi_nparams] = t->csi_params[t->csi_nparams] * 10 + (c - '0');
                 t->csi_has_param = 1;
@@ -1724,6 +1802,8 @@ static void term_reset(Terminal *t) {
     t->cursor_y = 0;
     t->saved_cursor_x = 0;
     t->saved_cursor_y = 0;
+    t->top_margin = 0;
+    t->bottom_margin = t->rows - 1;
     t->cursor_visible = 1;
     t->cur_fg = COLOR_FG;
     t->cur_bg = COLOR_BG;
@@ -1883,8 +1963,45 @@ static void copy_selection_text(void) {
     }
     sel_text[len] = '\0';
 
-    XSetSelectionOwner(dpy, XA_PRIMARY, win, CurrentTime);
-    XSetSelectionOwner(dpy, atom_clipboard, win, CurrentTime);
+    if (dpy && win) {
+        XSetSelectionOwner(dpy, XA_PRIMARY, win, CurrentTime);
+        XSetSelectionOwner(dpy, atom_clipboard, win, CurrentTime);
+    }
+}
+
+static void select_word_at(int r, int c) {
+    if (r < 0 || r >= rows || c < 0 || c >= cols) return;
+    Cell cur = get_cell(r, c);
+    int target_is_space = (cur.codepoint == ' ' || cur.codepoint == 0);
+    int sc = c, ec = c;
+    while (sc > 0) {
+        Cell prev = get_cell(r, sc - 1);
+        int is_space = (prev.codepoint == ' ' || prev.codepoint == 0);
+        if (is_space != target_is_space) break;
+        sc--;
+    }
+    while (ec < cols - 1) {
+        Cell next = get_cell(r, ec + 1);
+        int is_space = (next.codepoint == ' ' || next.codepoint == 0);
+        if (is_space != target_is_space) break;
+        ec++;
+    }
+    sel_start_r = sel_end_r = r;
+    sel_start_c = sc;
+    sel_end_c = ec;
+    sel_active = 0;
+    copy_selection_text();
+    dirty_all = 1;
+}
+
+static void select_line_at(int r) {
+    if (r < 0 || r >= rows) return;
+    sel_start_r = sel_end_r = r;
+    sel_start_c = 0;
+    sel_end_c = cols - 1;
+    sel_active = 0;
+    copy_selection_text();
+    dirty_all = 1;
 }
 
 static void reflow_terminal(void) {
@@ -1937,8 +2054,12 @@ static void reflow_terminal(void) {
     rows = new_rows;
     live_term.cols = new_cols;
     live_term.rows = new_rows;
+    live_term.top_margin = 0;
+    live_term.bottom_margin = new_rows - 1;
     replay_term.cols = new_cols;
     replay_term.rows = new_rows;
+    replay_term.top_margin = 0;
+    replay_term.bottom_margin = new_rows - 1;
 
     uint8_t *new_dirty = realloc(dirty, rows * sizeof(uint8_t));
     if (new_dirty) {
@@ -2115,6 +2236,7 @@ static void render_frame(void) {
             continue;
         }
 
+        // Pass 1: Render backgrounds, selection, and block cursor for all cells in row r
         for (int c = 0; c < cols; c++) {
             Cell cell = get_cell(r, c);
             if (cell.flags & FLAG_WIDE_DUMMY) {
@@ -2126,15 +2248,12 @@ static void render_frame(void) {
             int is_cursor = (!replay_mode && cur_visible && scroll_offset == 0 && r == cur_cy && c == cur_cx);
             int selected = is_selected(r, c);
 
-            uint32_t fg = cell.fg;
             uint32_t bg = cell.bg;
-
             if (cell.flags & FLAG_INVERSE) {
-                uint32_t tmp = fg; fg = bg; bg = tmp;
+                bg = cell.fg;
             }
             if (selected) {
                 bg = COLOR_SEL_BG;
-                fg = COLOR_SEL_FG;
             }
 
             int eff_style = (cursor_style == 0) ? default_cursor_style : cursor_style;
@@ -2142,7 +2261,6 @@ static void render_frame(void) {
             int draw_underline_cursor = (is_cursor && (eff_style == 3 || eff_style == 4));
             if (is_cursor && !draw_bar_cursor && !draw_underline_cursor) {
                 bg = COLOR_CURSOR;
-                fg = COLOR_BG;
             }
 
             int cell_x0 = padding_x + c * char_w;
@@ -2160,6 +2278,36 @@ static void render_frame(void) {
                     }
                 }
             }
+        }
+
+        // Pass 2: Render all glyphs, underlines, and cursor overlays on top of backgrounds
+        for (int c = 0; c < cols; c++) {
+            Cell cell = get_cell(r, c);
+            if (cell.flags & FLAG_WIDE_DUMMY) {
+                continue;
+            }
+
+            int span_w = (cell.flags & FLAG_WIDE) ? (char_w * 2) : char_w;
+            int cur_visible = replay_mode ? 1 : (live_term.cursor_visible && (!cursor_blink_enabled || cursor_blink_state));
+            int is_cursor = (!replay_mode && cur_visible && scroll_offset == 0 && r == cur_cy && c == cur_cx);
+            int selected = is_selected(r, c);
+
+            uint32_t fg = cell.fg;
+            if (cell.flags & FLAG_INVERSE) {
+                fg = cell.bg;
+            }
+            if (selected) {
+                fg = COLOR_SEL_FG;
+            }
+
+            int eff_style = (cursor_style == 0) ? default_cursor_style : cursor_style;
+            int draw_bar_cursor = (is_cursor && (eff_style == 5 || eff_style == 6));
+            int draw_underline_cursor = (is_cursor && (eff_style == 3 || eff_style == 4));
+            if (is_cursor && !draw_bar_cursor && !draw_underline_cursor) {
+                fg = COLOR_BG;
+            }
+
+            int cell_x0 = padding_x + c * char_w;
 
             if (cell.codepoint > 32) {
                 CachedGlyph *g = get_glyph(cell.codepoint);
@@ -2940,6 +3088,140 @@ static void configure_child_env(void) {
 #endif
 }
 
+static void handle_key_press_event(KeySym ksym, unsigned int state, const char *kbuf, int len) {
+    if (is_modifier_keysym(ksym)) {
+        return;
+    }
+
+    if (cursor_blink_enabled) {
+        cursor_blink_state = 1;
+        last_cursor_blink_us = get_time_us();
+    }
+
+    if (hud_message[0] != '\0') {
+        hud_message[0] = '\0';
+        dirty_all = 1;
+        return;
+    }
+
+    // Toggle Replay Mode with F1 or Ctrl+Shift+R
+    if (ksym == XK_F1 || ((state & ControlMask) && (state & ShiftMask) && (ksym == XK_R || ksym == XK_r))) {
+        replay_mode = !replay_mode;
+        if (replay_mode) {
+            scroll_offset = 0;
+            scrub_to_chunk(flight_count - 1);
+        } else {
+            dirty_all = 1;
+        }
+        return;
+    }
+
+    if (replay_mode) {
+        // Replay Scrubber Navigation
+        if (ksym == XK_Escape || ksym == XK_q) {
+            replay_mode = 0;
+            dirty_all = 1;
+        } else if (ksym == XK_Left || ksym == XK_h) {
+            scrub_to_chunk(replay_chunk_idx - ((state & ShiftMask) ? 10 : 1));
+        } else if (ksym == XK_Right || ksym == XK_l) {
+            scrub_to_chunk(replay_chunk_idx + ((state & ShiftMask) ? 10 : 1));
+        } else if (ksym == XK_Home || ksym == XK_0) {
+            scrub_to_chunk(0);
+        } else if (ksym == XK_End || ksym == XK_dollar) {
+            scrub_to_chunk(flight_count - 1);
+        } else if (ksym == XK_e) {
+            export_asciinema();
+        }
+        return;
+    }
+
+    // Font Zooming via Ctrl+Plus / Ctrl+Minus / Ctrl+0
+    if (state & ControlMask) {
+        if (ksym == XK_equal || ksym == XK_plus || ksym == XK_KP_Add) {
+            set_font_size(font_pt + 2);
+            return;
+        } else if (ksym == XK_minus || ksym == XK_underscore || ksym == XK_KP_Subtract) {
+            set_font_size(font_pt - 2);
+            return;
+        } else if (ksym == XK_0 || ksym == XK_KP_0) {
+            set_font_size(default_font_pt);
+            return;
+        }
+    }
+
+    // Configurable keybindings: Copy, Paste, etc.
+    int act = match_keybinding(state, ksym);
+    if (act == ACTION_COPY) {
+        copy_selection_text();
+        return;
+    } else if (act == ACTION_PASTE) {
+        if (dpy && win) {
+            XConvertSelection(dpy, atom_clipboard, atom_utf8, atom_sel_data, win, CurrentTime);
+        }
+        return;
+    }
+
+    // Scrollback navigation via Shift+PageUp / Shift+PageDown
+    if (state & ShiftMask) {
+        if (ksym == XK_Page_Up && !live_term.is_alt_screen) {
+            scroll_offset += rows / 2;
+            if (scroll_offset > hist_count) scroll_offset = hist_count;
+            dirty_all = 1;
+            return;
+        } else if (ksym == XK_Page_Down && !live_term.is_alt_screen) {
+            scroll_offset -= rows / 2;
+            if (scroll_offset < 0) scroll_offset = 0;
+            dirty_all = 1;
+            return;
+        }
+    }
+
+    if (scroll_offset > 0) {
+        scroll_offset = 0;
+        dirty_all = 1;
+    }
+
+    // Clear selection on typing
+    if (sel_active || sel_start_r >= 0) {
+        sel_active = 0;
+        sel_start_r = sel_start_c = sel_end_r = sel_end_c = -1;
+        dirty_all = 1;
+    }
+
+    if (ksym == XK_Return || ksym == XK_KP_Enter) {
+        if ((state & ShiftMask) && (state & Mod1Mask)) {
+            pty_write(pty_master, "\x1b[13;4u", 7);
+        } else if (state & ShiftMask) {
+            pty_write(pty_master, "\x1b[13;2u", 7);
+        } else if (state & Mod1Mask) {
+            pty_write(pty_master, "\x1b\r", 2);
+        } else {
+            pty_write(pty_master, "\r", 1);
+        }
+    } else if (ksym == XK_BackSpace || (len == 1 && (unsigned char)kbuf[0] == 0x08)) {
+        pty_write(pty_master, "\x7f", 1);
+    } else if (ksym == XK_Delete) {
+        pty_write(pty_master, "\x1b[3~", 4);
+    } else if (ksym == XK_Insert) {
+        pty_write(pty_master, "\x1b[2~", 4);
+    } else if (ksym == XK_Home) {
+        pty_write(pty_master, app_cursor_keys ? "\x1bOH" : "\x1b[H", 3);
+    } else if (ksym == XK_End) {
+        pty_write(pty_master, app_cursor_keys ? "\x1bOF" : "\x1b[F", 3);
+    } else if (ksym == XK_Page_Up || ksym == XK_Prior) {
+        pty_write(pty_master, "\x1b[5~", 4);
+    } else if (ksym == XK_Page_Down || ksym == XK_Next) {
+        pty_write(pty_master, "\x1b[6~", 4);
+    } else if (len > 0) {
+        pty_write(pty_master, kbuf, len);
+    } else {
+        if (ksym == XK_Up) pty_write(pty_master, app_cursor_keys ? "\x1bOA" : "\x1b[A", 3);
+        else if (ksym == XK_Down) pty_write(pty_master, app_cursor_keys ? "\x1bOB" : "\x1b[B", 3);
+        else if (ksym == XK_Right) pty_write(pty_master, app_cursor_keys ? "\x1bOC" : "\x1b[C", 3);
+        else if (ksym == XK_Left) pty_write(pty_master, app_cursor_keys ? "\x1bOD" : "\x1b[D", 3);
+    }
+}
+
 int main(int argc, char *argv[]) {
     setlocale(LC_ALL, "");
     init_gamma_lut();
@@ -3374,132 +3656,7 @@ int main(int argc, char *argv[]) {
                 KeySym ksym;
                 int len = XLookupString(&ev.xkey, kbuf, sizeof(kbuf), &ksym, NULL);
                 unsigned int state = CLEAN_MASK(ev.xkey.state);
-
-                if (cursor_blink_enabled) {
-                    cursor_blink_state = 1;
-                    last_cursor_blink_us = get_time_us();
-                }
-
-                if (hud_message[0] != '\0') {
-                    hud_message[0] = '\0';
-                    dirty_all = 1;
-                    continue;
-                }
-
-                // Toggle Replay Mode with F1 or Ctrl+Shift+R
-                if (ksym == XK_F1 || ((state & ControlMask) && (state & ShiftMask) && (ksym == XK_R || ksym == XK_r))) {
-                    replay_mode = !replay_mode;
-                    if (replay_mode) {
-                        scroll_offset = 0;
-                        scrub_to_chunk(flight_count - 1);
-                    } else {
-                        dirty_all = 1;
-                    }
-                    continue;
-                }
-
-                if (replay_mode) {
-                    // Replay Scrubber Navigation
-                    if (ksym == XK_Escape || ksym == XK_q) {
-                        replay_mode = 0;
-                        dirty_all = 1;
-                    } else if (ksym == XK_Left || ksym == XK_h) {
-                        scrub_to_chunk(replay_chunk_idx - ((state & ShiftMask) ? 10 : 1));
-                    } else if (ksym == XK_Right || ksym == XK_l) {
-                        scrub_to_chunk(replay_chunk_idx + ((state & ShiftMask) ? 10 : 1));
-                    } else if (ksym == XK_Home || ksym == XK_0) {
-                        scrub_to_chunk(0);
-                    } else if (ksym == XK_End || ksym == XK_dollar) {
-                        scrub_to_chunk(flight_count - 1);
-                    } else if (ksym == XK_e) {
-                        export_asciinema();
-                    }
-                    continue;
-                }
-
-                // Font Zooming via Ctrl+Plus / Ctrl+Minus / Ctrl+0
-                if (state & ControlMask) {
-                    if (ksym == XK_equal || ksym == XK_plus || ksym == XK_KP_Add) {
-                        set_font_size(font_pt + 2);
-                        continue;
-                    } else if (ksym == XK_minus || ksym == XK_underscore || ksym == XK_KP_Subtract) {
-                        set_font_size(font_pt - 2);
-                        continue;
-                    } else if (ksym == XK_0 || ksym == XK_KP_0) {
-                        set_font_size(default_font_pt);
-                        continue;
-                    }
-                }
-
-                // Configurable keybindings: Copy, Paste, etc.
-                int act = match_keybinding(state, ksym);
-                if (act == ACTION_COPY) {
-                    copy_selection_text();
-                    continue;
-                } else if (act == ACTION_PASTE) {
-                    XConvertSelection(dpy, atom_clipboard, atom_utf8, atom_sel_data, win, CurrentTime);
-                    continue;
-                }
-
-                // Scrollback navigation via Shift+PageUp / Shift+PageDown
-                if (state & ShiftMask) {
-                    if (ksym == XK_Page_Up && !live_term.is_alt_screen) {
-                        scroll_offset += rows / 2;
-                        if (scroll_offset > hist_count) scroll_offset = hist_count;
-                        dirty_all = 1;
-                        continue;
-                    } else if (ksym == XK_Page_Down && !live_term.is_alt_screen) {
-                        scroll_offset -= rows / 2;
-                        if (scroll_offset < 0) scroll_offset = 0;
-                        dirty_all = 1;
-                        continue;
-                    }
-                }
-
-                if (scroll_offset > 0) {
-                    scroll_offset = 0;
-                    dirty_all = 1;
-                }
-
-                // Clear selection on typing
-                if (sel_active || sel_start_r >= 0) {
-                    sel_active = 0;
-                    sel_start_r = sel_start_c = sel_end_r = sel_end_c = -1;
-                    dirty_all = 1;
-                }
-
-                if (ksym == XK_Return || ksym == XK_KP_Enter) {
-                    if ((state & ShiftMask) && (state & Mod1Mask)) {
-                        pty_write(pty_master, "\x1b[13;4u", 7);
-                    } else if (state & ShiftMask) {
-                        pty_write(pty_master, "\x1b[13;2u", 7);
-                    } else if (state & Mod1Mask) {
-                        pty_write(pty_master, "\x1b\r", 2);
-                    } else {
-                        pty_write(pty_master, "\r", 1);
-                    }
-                } else if (ksym == XK_BackSpace || (len == 1 && (unsigned char)kbuf[0] == 0x08)) {
-                    pty_write(pty_master, "\x7f", 1);
-                } else if (ksym == XK_Delete) {
-                    pty_write(pty_master, "\x1b[3~", 4);
-                } else if (ksym == XK_Insert) {
-                    pty_write(pty_master, "\x1b[2~", 4);
-                } else if (ksym == XK_Home) {
-                    pty_write(pty_master, app_cursor_keys ? "\x1bOH" : "\x1b[H", 3);
-                } else if (ksym == XK_End) {
-                    pty_write(pty_master, app_cursor_keys ? "\x1bOF" : "\x1b[F", 3);
-                } else if (ksym == XK_Page_Up || ksym == XK_Prior) {
-                    pty_write(pty_master, "\x1b[5~", 4);
-                } else if (ksym == XK_Page_Down || ksym == XK_Next) {
-                    pty_write(pty_master, "\x1b[6~", 4);
-                } else if (len > 0) {
-                    pty_write(pty_master, kbuf, len);
-                } else {
-                    if (ksym == XK_Up) pty_write(pty_master, app_cursor_keys ? "\x1bOA" : "\x1b[A", 3);
-                    else if (ksym == XK_Down) pty_write(pty_master, app_cursor_keys ? "\x1bOB" : "\x1b[B", 3);
-                    else if (ksym == XK_Right) pty_write(pty_master, app_cursor_keys ? "\x1bOC" : "\x1b[C", 3);
-                    else if (ksym == XK_Left) pty_write(pty_master, app_cursor_keys ? "\x1bOD" : "\x1b[D", 3);
-                }
+                handle_key_press_event(ksym, state, kbuf, len);
             } else if (ev.type == ButtonPress) {
                 if (replay_mode) continue;
                 int c = (ev.xbutton.x - padding_x) / char_w;
@@ -3537,10 +3694,26 @@ int main(int argc, char *argv[]) {
                 }
 
                 if (ev.xbutton.button == Button1) {
-                    sel_active = 1;
-                    sel_start_c = sel_end_c = c;
-                    sel_start_r = sel_end_r = r;
-                    dirty_all = 1;
+                    Time click_time = ev.xbutton.time;
+                    if (click_time - last_click_time < 350 && abs(c - last_click_c) <= 1 && r == last_click_r) {
+                        click_count++;
+                    } else {
+                        click_count = 1;
+                    }
+                    last_click_time = click_time;
+                    last_click_c = c;
+                    last_click_r = r;
+
+                    if (click_count == 2) {
+                        select_word_at(r, c);
+                    } else if (click_count >= 3) {
+                        select_line_at(r);
+                    } else {
+                        sel_active = 1;
+                        sel_start_c = sel_end_c = c;
+                        sel_start_r = sel_end_r = r;
+                        dirty_all = 1;
+                    }
                 } else if (ev.xbutton.button == Button2) {
                     XConvertSelection(dpy, XA_PRIMARY, atom_utf8, atom_sel_data, win, CurrentTime);
                 } else if (ev.xbutton.button == Button4) {
