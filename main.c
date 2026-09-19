@@ -1210,12 +1210,13 @@ static void handle_csi_internal(Terminal *t, unsigned char final_char, int is_li
             break;
         }
         case 'L': {
+            if (t->cursor_y < t->top_margin || t->cursor_y > t->bottom_margin) break;
             int n = (p1 > 0) ? p1 : 1;
-            if (n > t->rows - t->cursor_y) n = t->rows - t->cursor_y;
+            if (n > t->bottom_margin - t->cursor_y + 1) n = t->bottom_margin - t->cursor_y + 1;
             if (n > 0) {
                 memmove(&t->grid[(t->cursor_y + n) * t->cols],
                         &t->grid[t->cursor_y * t->cols],
-                        (size_t)(t->rows - t->cursor_y - n) * t->cols * sizeof(Cell));
+                        (size_t)(t->bottom_margin - t->cursor_y + 1 - n) * t->cols * sizeof(Cell));
                 for (int r = t->cursor_y; r < t->cursor_y + n; r++) {
                     for (int c = 0; c < t->cols; c++) {
                         t->grid[r * t->cols + c] = (Cell){' ', t->cur_fg, t->cur_bg, 0};
@@ -1226,13 +1227,14 @@ static void handle_csi_internal(Terminal *t, unsigned char final_char, int is_li
             break;
         }
         case 'M': {
+            if (t->cursor_y < t->top_margin || t->cursor_y > t->bottom_margin) break;
             int n = (p1 > 0) ? p1 : 1;
-            if (n > t->rows - t->cursor_y) n = t->rows - t->cursor_y;
+            if (n > t->bottom_margin - t->cursor_y + 1) n = t->bottom_margin - t->cursor_y + 1;
             if (n > 0) {
                 memmove(&t->grid[t->cursor_y * t->cols],
                         &t->grid[(t->cursor_y + n) * t->cols],
-                        (size_t)(t->rows - t->cursor_y - n) * t->cols * sizeof(Cell));
-                for (int r = t->rows - n; r < t->rows; r++) {
+                        (size_t)(t->bottom_margin - t->cursor_y + 1 - n) * t->cols * sizeof(Cell));
+                for (int r = t->bottom_margin - n + 1; r <= t->bottom_margin; r++) {
                     for (int c = 0; c < t->cols; c++) {
                         t->grid[r * t->cols + c] = (Cell){' ', t->cur_fg, t->cur_bg, 0};
                     }

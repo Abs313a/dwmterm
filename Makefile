@@ -1,5 +1,5 @@
 CC ?= gcc
-VERSION ?= 0.1
+VERSION ?= $(shell version=$$(git describe --tags --always --dirty 2>/dev/null) && printf '%s' "$${version#v}" || printf '%s' unknown)
 PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 DATADIR ?= $(PREFIX)/share

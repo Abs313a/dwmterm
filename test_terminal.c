@@ -835,6 +835,91 @@ static void test_csi_line_editing(void) {
     TEST_PASS();
 }
 
+static void test_csi_insert_line_respects_margins(void) {
+    tests_run++;
+    Terminal term;
+    term_init(&term, 8, 8);
+
+    for (int r = 0; r < term.rows; r++) {
+        for (int c = 0; c < term.cols; c++) {
+            term.grid[r * term.cols + c] = (Cell){(uint32_t)('A' + r), COLOR_FG, COLOR_BG, 0};
+        }
+    }
+
+    /* Rows 3 through 6 are the scrolling region. */
+    feed_bytes(&term, "\x1b[3;6r\x1b[4;1H\x1b[2L");
+
+    /* The header and footer must remain outside the IL operation. */
+    assert(term.grid[0 * term.cols].codepoint == 'A');
+    assert(term.grid[1 * term.cols].codepoint == 'B');
+    assert(term.grid[2 * term.cols].codepoint == 'C');
+    assert(term.grid[6 * term.cols].codepoint == 'G');
+    assert(term.grid[7 * term.cols].codepoint == 'H');
+
+    /* IL is limited to rows 4 through 6, inclusive. */
+    assert(term.grid[3 * term.cols].codepoint == ' ');
+    assert(term.grid[4 * term.cols].codepoint == ' ');
+    assert(term.grid[5 * term.cols].codepoint == 'D');
+
+    free(term.primary_grid);
+    free(term.alt_grid);
+    TEST_PASS();
+}
+
+static void test_csi_delete_line_respects_margins(void) {
+    tests_run++;
+    Terminal term;
+    term_init(&term, 8, 8);
+
+    for (int r = 0; r < term.rows; r++) {
+        for (int c = 0; c < term.cols; c++) {
+            term.grid[r * term.cols + c] = (Cell){(uint32_t)('A' + r), COLOR_FG, COLOR_BG, 0};
+        }
+    }
+
+    /* Rows 3 through 6 are the scrolling region. */
+    feed_bytes(&term, "\x1b[3;6r\x1b[4;1H\x1b[2M");
+
+    /* The header and footer must remain outside the DL operation. */
+    assert(term.grid[0 * term.cols].codepoint == 'A');
+    assert(term.grid[1 * term.cols].codepoint == 'B');
+    assert(term.grid[2 * term.cols].codepoint == 'C');
+    assert(term.grid[6 * term.cols].codepoint == 'G');
+    assert(term.grid[7 * term.cols].codepoint == 'H');
+
+    /* DL is limited to rows 4 through 6, inclusive. */
+    assert(term.grid[3 * term.cols].codepoint == 'F');
+    assert(term.grid[4 * term.cols].codepoint == ' ');
+    assert(term.grid[5 * term.cols].codepoint == ' ');
+
+    free(term.primary_grid);
+    free(term.alt_grid);
+    TEST_PASS();
+}
+
+static void test_csi_line_editing_outside_margins_is_noop(void) {
+    tests_run++;
+    Terminal term;
+    term_init(&term, 8, 8);
+
+    for (int r = 0; r < term.rows; r++) {
+        for (int c = 0; c < term.cols; c++) {
+            term.grid[r * term.cols + c] = (Cell){(uint32_t)('A' + r), COLOR_FG, COLOR_BG, 0};
+        }
+    }
+
+    /* Rows 3 through 6 are the scrolling region; the cursor stays in row 2. */
+    feed_bytes(&term, "\x1b[3;6r\x1b[2;1H\x1b[L\x1b[M");
+
+    for (int r = 0; r < term.rows; r++) {
+        assert(term.grid[r * term.cols].codepoint == (uint32_t)('A' + r));
+    }
+
+    free(term.primary_grid);
+    free(term.alt_grid);
+    TEST_PASS();
+}
+
 static void test_synchronized_output_mode_2026(void) {
     tests_run++;
     Terminal term;
@@ -1565,6 +1650,9 @@ int main(void) {
     test_csi_dsr_and_da();
     test_csi_character_editing();
     test_csi_line_editing();
+    test_csi_insert_line_respects_margins();
+    test_csi_delete_line_respects_margins();
+    test_csi_line_editing_outside_margins_is_noop();
     test_synchronized_output_mode_2026();
     test_charset_designation_filtering();
     test_esc_reverse_index();
