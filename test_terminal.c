@@ -1031,16 +1031,16 @@ static void test_mouse_mode_and_sgr_toggles(void) {
     term_init(&term, 80, 24);
 
     // Initial state
-    assert(mouse_mode == 0);
+    assert(mouse_mode == MOUSE_MODE_OFF);
     assert(mouse_sgr == 0);
 
     // Enable DECSET 1000 (normal tracking)
     feed_bytes(&term, "\x1b[?1000h");
-    assert(mouse_mode == 1000);
+    assert(mouse_mode == MOUSE_MODE_NORMAL);
 
     // Enable DECSET 1002 (button event tracking)
     feed_bytes(&term, "\x1b[?1002h");
-    assert(mouse_mode == 1002);
+    assert(mouse_mode == MOUSE_MODE_BUTTON_EVENT);
 
     // Enable DECSET 1006 (SGR mode)
     feed_bytes(&term, "\x1b[?1006h");
@@ -1052,7 +1052,7 @@ static void test_mouse_mode_and_sgr_toggles(void) {
 
     // Disable DECSET 1000
     feed_bytes(&term, "\x1b[?1000l");
-    assert(mouse_mode == 0);
+    assert(mouse_mode == MOUSE_MODE_OFF);
 
     free(term.primary_grid);
     free(term.alt_grid);
@@ -1623,6 +1623,48 @@ static void test_modifier_keypress_preserves_selection(void) {
     TEST_PASS();
 }
 
+static void test_selection_text_growth_and_formatting(void) {
+    tests_run++;
+    rows = 60;
+    cols = 100;
+    Terminal term;
+    term_init(&term, cols, rows);
+    live_term = term;
+    scroll_offset = 0;
+    replay_mode = 0;
+
+    for (int r = 0; r < 50; r++) {
+        for (int c = 0; c < 90; c++) {
+            term.grid[r * cols + c] = (Cell){(uint32_t)('0' + (c % 10)), COLOR_FG, COLOR_BG, 0};
+        }
+    }
+
+    sel_start_r = 0;
+    sel_start_c = 0;
+    sel_end_r = 49;
+    sel_end_c = 89;
+
+    copy_selection_text();
+
+    assert(sel_text != NULL);
+    size_t len = strlen(sel_text);
+    assert(len == 50 * 90 + 49);
+    assert(sel_text[0] == '0');
+    assert(sel_text[89] == '9');
+    assert(sel_text[90] == '\n');
+    assert(sel_text[91] == '0');
+    assert(sel_text[len - 1] == '9');
+
+    free(sel_text);
+    sel_text = NULL;
+    sel_start_r = sel_start_c = sel_end_r = sel_end_c = -1;
+
+    free(term.primary_grid);
+    free(term.alt_grid);
+    memset(&live_term, 0, sizeof(Terminal));
+    TEST_PASS();
+}
+
 int main(void) {
     setlocale(LC_ALL, "");
     printf("====================================================\n");
@@ -1671,6 +1713,7 @@ int main(void) {
     test_private_csi_does_not_set_underline();
     test_double_click_word_selection();
     test_modifier_keypress_preserves_selection();
+    test_selection_text_growth_and_formatting();
 
     printf("====================================================\n");
     printf("All %d/%d tests passed successfully!\n", tests_passed, tests_run);

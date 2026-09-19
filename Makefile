@@ -80,6 +80,11 @@ test: test_terminal.c main.c
 	./test_terminal
 	@rm -f test_terminal
 
+test-sanitize: test_terminal.c main.c
+	$(CC) $(CFLAGS) -fsanitize=address,undefined $(PKG_CFLAGS) -DDATADIR=\"$(DATADIR)\" -DVERSION=\"$(VERSION)\" $(CPPFLAGS) $(LDFLAGS) -fsanitize=address,undefined test_terminal.c $(PKG_LIBS) -o test_terminal
+	./test_terminal
+	@rm -f test_terminal
+
 clean:
 	rm -f -- $(BIN) miniterm test_terminal *.o
 	rm -rf dist dwmterm-v*

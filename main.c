@@ -36,7 +36,7 @@
 #endif
 
 #ifndef VERSION
-#define VERSION "0.1"
+#define VERSION "0.2.1"
 #endif
 
 #define DEFAULT_COLS 90
@@ -242,7 +242,13 @@ static inline void pty_write(int fd, const void *buf, size_t count) {
 static int in_sync_update = 0;
 static uint64_t sync_update_start_us = 0;
 static int app_cursor_keys = 0;
-static int mouse_mode = 0;       // 0=off, 1000=normal, 1002=btn-event, 1003=any-event
+enum MouseMode {
+    MOUSE_MODE_OFF          = 0,
+    MOUSE_MODE_NORMAL       = 1000,
+    MOUSE_MODE_BUTTON_EVENT = 1002,
+    MOUSE_MODE_ANY_EVENT    = 1003
+};
+static int mouse_mode = MOUSE_MODE_OFF;
 static int mouse_sgr = 0;        // 1=SGR 1006 extended mode
 static int bracketed_paste = 0;  // DECSET 2004
 static int default_cursor_style = 6;
@@ -486,8 +492,7 @@ static int match_keybinding(unsigned int state, KeySym ksym) {
 static void parse_keybind_line(const char *val) {
     if (!val || !*val) return;
     char buf[128];
-    strncpy(buf, val, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
+    snprintf(buf, sizeof(buf), "%s", val);
     char *sep = strchr(buf, '=');
     if (!sep) sep = strchr(buf, ':');
     char *action_str = NULL;
@@ -528,8 +533,7 @@ static void parse_key_list(const char *val, int action) {
     if (!val) return;
     clear_keybindings_for_action(action);
     char buf[256];
-    strncpy(buf, val, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
+    snprintf(buf, sizeof(buf), "%s", val);
     char *saveptr = NULL;
     char *token = strtok_r(buf, ",", &saveptr);
     while (token) {
@@ -1011,6 +1015,14 @@ static void term_init(Terminal *t, int c, int r) {
     t->bottom_margin = r - 1;
     t->primary_grid = calloc(c * r, sizeof(Cell));
     t->alt_grid = calloc(c * r, sizeof(Cell));
+    if (!t->primary_grid || !t->alt_grid) {
+        free(t->primary_grid);
+        free(t->alt_grid);
+        t->primary_grid = NULL;
+        t->alt_grid = NULL;
+        t->grid = NULL;
+        return;
+    }
     for (int i = 0; i < c * r; i++) {
         t->primary_grid[i] = (Cell){' ', COLOR_FG, COLOR_BG, 0};
         t->alt_grid[i] = (Cell){' ', COLOR_FG, COLOR_BG, 0};
@@ -1042,7 +1054,9 @@ static void term_scroll_up_internal(Terminal *t, int n, int is_live) {
     if (top == 0 && bot == t->rows - 1 && is_live && !t->is_alt_screen) {
         for (int step = 0; step < n; step++) {
             if (history[hist_head] == NULL || hist_cols[hist_head] != t->cols) {
-                history[hist_head] = realloc(history[hist_head], (size_t)t->cols * sizeof(Cell));
+                Cell *new_line = realloc(history[hist_head], (size_t)t->cols * sizeof(Cell));
+                if (!new_line) continue;
+                history[hist_head] = new_line;
                 hist_cols[hist_head] = t->cols;
             }
             memcpy(history[hist_head], &t->grid[step * t->cols], (size_t)t->cols * sizeof(Cell));
@@ -1377,7 +1391,7 @@ static void handle_csi_internal(Terminal *t, unsigned char final_char, int is_li
                     } else if (p == 25) {
                         t->cursor_visible = 1;
                         if (is_live) mark_line_dirty(t->cursor_y, t->rows);
-                    } else if (p == 1000 || p == 1002 || p == 1003) {
+                    } else if (p == MOUSE_MODE_NORMAL || p == MOUSE_MODE_BUTTON_EVENT || p == MOUSE_MODE_ANY_EVENT) {
                         mouse_mode = p;
                     } else if (p == 1006) {
                         mouse_sgr = 1;
@@ -1447,8 +1461,8 @@ static void handle_csi_internal(Terminal *t, unsigned char final_char, int is_li
                     } else if (p == 25) {
                         t->cursor_visible = 0;
                         if (is_live) mark_line_dirty(t->cursor_y, t->rows);
-                    } else if (p == 1000 || p == 1002 || p == 1003) {
-                        mouse_mode = 0;
+                    } else if (p == MOUSE_MODE_NORMAL || p == MOUSE_MODE_BUTTON_EVENT || p == MOUSE_MODE_ANY_EVENT) {
+                        mouse_mode = MOUSE_MODE_OFF;
                     } else if (p == 1006) {
                         mouse_sgr = 0;
                     } else if (p == 2004) {
@@ -1833,8 +1847,10 @@ static void scrub_to_chunk(int target_chunk) {
         int idx = (flight_total_recorded >= MAX_FLIGHT_CHUNKS) ?
                   (flight_head - flight_count + i + MAX_FLIGHT_CHUNKS * 2) % MAX_FLIGHT_CHUNKS : i;
         FlightChunk *fc = &flight_log[idx];
-        for (size_t b = 0; b < fc->len; b++) {
-            term_put_byte_internal(&replay_term, (unsigned char)fc->data[b], 0);
+        if (fc->data) {
+            for (size_t b = 0; b < fc->len; b++) {
+                term_put_byte_internal(&replay_term, (unsigned char)fc->data[b], 0);
+            }
         }
     }
 
@@ -1865,17 +1881,19 @@ static void export_asciinema(void) {
             double sec = (double)(fc->ts_us - base_ts) / 1000000.0;
 
             fprintf(f, "[%.6f, \"o\", \"", sec);
-            for (size_t j = 0; j < fc->len; j++) {
-                unsigned char c = (unsigned char)fc->data[j];
-                if (c == '"') fputs("\\\"", f);
-                else if (c == '\\') fputs("\\\\", f);
-                else if (c == '\b') fputs("\\b", f);
-                else if (c == '\f') fputs("\\f", f);
-                else if (c == '\n') fputs("\\n", f);
-                else if (c == '\r') fputs("\\r", f);
-                else if (c == '\t') fputs("\\t", f);
-                else if (c < 32) fprintf(f, "\\u%04x", c);
-                else fputc(c, f);
+            if (fc->data) {
+                for (size_t j = 0; j < fc->len; j++) {
+                    unsigned char c = (unsigned char)fc->data[j];
+                    if (c == '"') fputs("\\\"", f);
+                    else if (c == '\\') fputs("\\\\", f);
+                    else if (c == '\b') fputs("\\b", f);
+                    else if (c == '\f') fputs("\\f", f);
+                    else if (c == '\n') fputs("\\n", f);
+                    else if (c == '\r') fputs("\\r", f);
+                    else if (c == '\t') fputs("\\t", f);
+                    else if (c < 32) fprintf(f, "\\u%04x", c);
+                    else fputc(c, f);
+                }
             }
             fprintf(f, "\"]\n");
         }
@@ -1918,6 +1936,20 @@ static int codepoint_to_utf8(uint32_t cp, char *out) {
     }
 }
 
+static int sel_text_grow(char **buf, size_t *cap, size_t needed) {
+    if (needed < *cap) return 1;
+    size_t new_cap = *cap;
+    while (new_cap <= needed) {
+        if (new_cap > SIZE_MAX / 2) return 0;
+        new_cap *= 2;
+    }
+    char *new_buf = realloc(*buf, new_cap);
+    if (!new_buf) return 0;
+    *buf = new_buf;
+    *cap = new_cap;
+    return 1;
+}
+
 static void copy_selection_text(void) {
     if (sel_start_r < 0 || sel_end_r < 0) return;
 
@@ -1931,6 +1963,7 @@ static void copy_selection_text(void) {
     size_t cap = 4096, len = 0;
     free(sel_text);
     sel_text = malloc(cap);
+    if (!sel_text) return;
 
     for (int r = sr; r <= er; r++) {
         int c_start = (r == sr) ? sc : 0;
@@ -1947,18 +1980,20 @@ static void copy_selection_text(void) {
             Cell cell = get_cell(r, c);
             char u[8];
             int n = codepoint_to_utf8(cell.codepoint ? cell.codepoint : ' ', u);
-            if (len + n + 2 >= cap) {
-                cap *= 2;
-                sel_text = realloc(sel_text, cap);
+            if (!sel_text_grow(&sel_text, &cap, len + (size_t)n + 2)) {
+                free(sel_text);
+                sel_text = NULL;
+                return;
             }
-            memcpy(&sel_text[len], u, n);
-            len += n;
+            memcpy(&sel_text[len], u, (size_t)n);
+            len += (size_t)n;
         }
 
         if (r < er) {
-            if (len + 2 >= cap) {
-                cap *= 2;
-                sel_text = realloc(sel_text, cap);
+            if (!sel_text_grow(&sel_text, &cap, len + 2)) {
+                free(sel_text);
+                sel_text = NULL;
+                return;
             }
             sel_text[len++] = '\n';
         }
@@ -2630,14 +2665,14 @@ static void load_config_from_file(const char *config_path) {
         if (sep) {
             size_t klen = (size_t)(sep - p);
             if (klen >= sizeof(key)) klen = sizeof(key) - 1;
-            strncpy(key, p, klen);
+            memcpy(key, p, klen);
             key[klen] = '\0';
             char *ke = key + strlen(key) - 1;
             while (ke >= key && (*ke == ' ' || *ke == '\t')) { *ke = '\0'; ke--; }
 
             char *v = sep + 1;
             while (*v == ' ' || *v == '\t') v++;
-            strncpy(val, v, sizeof(val) - 1);
+            snprintf(val, sizeof(val), "%s", v);
             char *ve = val + strlen(val) - 1;
             while (ve >= val && (*ve == ' ' || *ve == '\t' || *ve == '\n' || *ve == '\r')) { *ve = '\0'; ve--; }
         } else {
@@ -2658,8 +2693,7 @@ static void load_config_from_file(const char *config_path) {
             }
         } else if (strcasecmp(key, "font_family") == 0 || strcasecmp(key, "font") == 0 || strcasecmp(key, "fontfamily") == 0 || strcasecmp(key, "font_name") == 0) {
             if (clean_val[0]) {
-                strncpy(config_font_family, clean_val, sizeof(config_font_family) - 1);
-                config_font_family[sizeof(config_font_family) - 1] = '\0';
+                snprintf(config_font_family, sizeof(config_font_family), "%s", clean_val);
             }
         } else if (strcasecmp(key, "cols") == 0 || strcasecmp(key, "columns") == 0) {
             int c = atoi(clean_val);
@@ -2742,16 +2776,14 @@ static int resolve_theme_path(char *out_path, size_t max_len) {
     if (xdg && *xdg) {
         snprintf(path, sizeof(path), "%s/dwmterm/colors", xdg);
         if (access(path, R_OK) == 0) {
-            strncpy(out_path, path, max_len - 1);
-            out_path[max_len - 1] = '\0';
+            snprintf(out_path, max_len, "%s", path);
             return 1;
         }
     }
     if (home && *home) {
         snprintf(path, sizeof(path), "%s/.config/dwmterm/colors", home);
         if (access(path, R_OK) == 0) {
-            strncpy(out_path, path, max_len - 1);
-            out_path[max_len - 1] = '\0';
+            snprintf(out_path, max_len, "%s", path);
             return 1;
         }
     }
@@ -2761,14 +2793,12 @@ static int resolve_theme_path(char *out_path, size_t max_len) {
     if (home && *home && desktop_session && *desktop_session) {
         snprintf(path, sizeof(path), "%s/.local/state/%s/current/theme/colors.toml", home, desktop_session);
         if (access(path, R_OK) == 0) {
-            strncpy(out_path, path, max_len - 1);
-            out_path[max_len - 1] = '\0';
+            snprintf(out_path, max_len, "%s", path);
             return 1;
         }
         snprintf(path, sizeof(path), "%s/.local/state/%s/current/theme/ghostty.conf", home, desktop_session);
         if (access(path, R_OK) == 0) {
-            strncpy(out_path, path, max_len - 1);
-            out_path[max_len - 1] = '\0';
+            snprintf(out_path, max_len, "%s", path);
             return 1;
         }
     }
@@ -2777,22 +2807,19 @@ static int resolve_theme_path(char *out_path, size_t max_len) {
     if (xdg && *xdg) {
         snprintf(path, sizeof(path), "%s/dwm/themes.toml", xdg);
         if (access(path, R_OK) == 0) {
-            strncpy(out_path, path, max_len - 1);
-            out_path[max_len - 1] = '\0';
+            snprintf(out_path, max_len, "%s", path);
             return 1;
         }
     }
     if (home && *home) {
         snprintf(path, sizeof(path), "%s/.config/dwm/themes.toml", home);
         if (access(path, R_OK) == 0) {
-            strncpy(out_path, path, max_len - 1);
-            out_path[max_len - 1] = '\0';
+            snprintf(out_path, max_len, "%s", path);
             return 1;
         }
         snprintf(path, sizeof(path), "%s/.config/dwm-titus/themes.toml", home);
         if (access(path, R_OK) == 0) {
-            strncpy(out_path, path, max_len - 1);
-            out_path[max_len - 1] = '\0';
+            snprintf(out_path, max_len, "%s", path);
             return 1;
         }
     }
@@ -2859,7 +2886,7 @@ static void load_theme_colors_from_file(const char *custom_path, int initial) {
             if (end_b) {
                 size_t slen = (size_t)(end_b - (p + 1));
                 if (slen >= sizeof(current_section)) slen = sizeof(current_section) - 1;
-                strncpy(current_section, p + 1, slen);
+                memcpy(current_section, p + 1, slen);
                 current_section[slen] = '\0';
                 char *cs_end = current_section + strlen(current_section) - 1;
                 while (cs_end >= current_section && (*cs_end == ' ' || *cs_end == '\t')) { *cs_end = '\0'; cs_end--; }
@@ -2872,14 +2899,14 @@ static void load_theme_colors_from_file(const char *custom_path, int initial) {
                 char k[64] = {0}, v[64] = {0};
                 size_t klen = (size_t)(sep - p);
                 if (klen >= sizeof(k)) klen = sizeof(k) - 1;
-                strncpy(k, p, klen);
+                memcpy(k, p, klen);
                 k[klen] = '\0';
                 char *ke = k + strlen(k) - 1;
                 while (ke >= k && (*ke == ' ' || *ke == '\t')) { *ke = '\0'; ke--; }
 
                 char *val_p = sep + 1;
                 while (*val_p == ' ' || *val_p == '\t' || *val_p == '"' || *val_p == '\'') val_p++;
-                strncpy(v, val_p, sizeof(v) - 1);
+                snprintf(v, sizeof(v), "%s", val_p);
                 char *ve = v + strlen(v) - 1;
                 while (ve >= v && (*ve == ' ' || *ve == '\t' || *ve == '"' || *ve == '\'' || *ve == '\n' || *ve == '\r')) { *ve = '\0'; ve--; }
 
@@ -2905,7 +2932,7 @@ static void load_theme_colors_from_file(const char *custom_path, int initial) {
             if (end_b) {
                 size_t slen = (size_t)(end_b - (p + 1));
                 if (slen >= sizeof(current_section)) slen = sizeof(current_section) - 1;
-                strncpy(current_section, p + 1, slen);
+                memcpy(current_section, p + 1, slen);
                 current_section[slen] = '\0';
                 char *cs_end = current_section + strlen(current_section) - 1;
                 while (cs_end >= current_section && (*cs_end == ' ' || *cs_end == '\t')) { *cs_end = '\0'; cs_end--; }
@@ -2930,14 +2957,14 @@ static void load_theme_colors_from_file(const char *custom_path, int initial) {
         if (sep) {
             size_t klen = (size_t)(sep - p);
             if (klen >= sizeof(key)) klen = sizeof(key) - 1;
-            strncpy(key, p, klen);
+            memcpy(key, p, klen);
             key[klen] = '\0';
             char *ke = key + strlen(key) - 1;
             while (ke >= key && (*ke == ' ' || *ke == '\t')) { *ke = '\0'; ke--; }
 
             char *v = sep + 1;
             while (*v == ' ' || *v == '\t') v++;
-            strncpy(val, v, sizeof(val) - 1);
+            snprintf(val, sizeof(val), "%s", v);
             char *ve = val + strlen(val) - 1;
             while (ve >= val && (*ve == ' ' || *ve == '\t' || *ve == '\n' || *ve == '\r')) { *ve = '\0'; ve--; }
         } else {
@@ -3048,8 +3075,7 @@ static void load_theme_colors(int initial) {
         load_theme_colors_from_file(theme_path, initial);
         struct stat st;
         if (stat(theme_path, &st) == 0) {
-            strncpy(active_theme_path, theme_path, sizeof(active_theme_path) - 1);
-            active_theme_path[sizeof(active_theme_path) - 1] = '\0';
+            snprintf(active_theme_path, sizeof(active_theme_path), "%s", theme_path);
             active_theme_mtime = st.st_mtime;
             active_theme_ino = st.st_ino;
         }
@@ -3224,6 +3250,47 @@ static void handle_key_press_event(KeySym ksym, unsigned int state, const char *
     }
 }
 
+static void cleanup_resources(pid_t child_pid) {
+    destroy_framebuffer();
+    if (dpy) {
+        if (gc) { XFreeGC(dpy, gc); gc = None; }
+        if (win) { XDestroyWindow(dpy, win); win = None; }
+        XCloseDisplay(dpy);
+        dpy = NULL;
+    }
+    if (pty_master >= 0) {
+        close(pty_master);
+        pty_master = -1;
+    }
+    if (child_pid > 0) {
+        kill(child_pid, SIGTERM);
+        waitpid(child_pid, NULL, 0);
+    }
+
+    for (int i = 0; i < MAX_HIST_LINES; i++) {
+        if (history[i]) { free(history[i]); history[i] = NULL; }
+    }
+    for (int i = 0; i < MAX_FLIGHT_CHUNKS; i++) {
+        if (flight_log[i].data) { free(flight_log[i].data); flight_log[i].data = NULL; }
+    }
+    free(live_term.primary_grid); live_term.primary_grid = NULL;
+    free(live_term.alt_grid); live_term.alt_grid = NULL;
+    free(replay_term.primary_grid); replay_term.primary_grid = NULL;
+    free(replay_term.alt_grid); replay_term.alt_grid = NULL;
+    free(dirty); dirty = NULL;
+    free(sel_text); sel_text = NULL;
+    clear_glyph_cache();
+    for (int i = 0; i < num_fallback_faces; i++) {
+        if (fallback_faces[i]) {
+            FT_Done_Face(fallback_faces[i]);
+            fallback_faces[i] = NULL;
+        }
+    }
+    num_fallback_faces = 0;
+    if (ft_face) { FT_Done_Face(ft_face); ft_face = NULL; }
+    if (ft_lib) { FT_Done_FreeType(ft_lib); ft_lib = NULL; }
+}
+
 int main(int argc, char *argv[]) {
     setlocale(LC_ALL, "");
     init_gamma_lut();
@@ -3278,12 +3345,10 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             const char *farg = argv[++i];
-            strncpy(config_font_family, farg, sizeof(config_font_family) - 1);
-            config_font_family[sizeof(config_font_family) - 1] = '\0';
+            snprintf(config_font_family, sizeof(config_font_family), "%s", farg);
         } else if (strncmp(argv[i], "--font=", 7) == 0) {
             const char *farg = argv[i] + 7;
-            strncpy(config_font_family, farg, sizeof(config_font_family) - 1);
-            config_font_family[sizeof(config_font_family) - 1] = '\0';
+            snprintf(config_font_family, sizeof(config_font_family), "%s", farg);
         } else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--padding") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "dwmterm: %s requires an argument\n", argv[i]);
@@ -3477,17 +3542,25 @@ int main(int argc, char *argv[]) {
     win_h = rows * char_h + padding_y * 2;
     term_init(&live_term, cols, rows);
     term_init(&replay_term, cols, rows);
+    if (!live_term.primary_grid || !replay_term.primary_grid) {
+        fprintf(stderr, "dwmterm: failed to allocate terminal grid buffers\n");
+        cleanup_resources(0);
+        return 1;
+    }
 
     dirty = calloc(rows, sizeof(uint8_t));
+    if (!dirty) {
+        fprintf(stderr, "dwmterm: failed to allocate dirty buffer\n");
+        cleanup_resources(0);
+        return 1;
+    }
     memset(dirty, 1, rows * sizeof(uint8_t));
 
     struct winsize ws = { .ws_row = (unsigned short)rows, .ws_col = (unsigned short)cols, .ws_xpixel = (unsigned short)win_w, .ws_ypixel = (unsigned short)win_h };
     pid_t pid = forkpty(&pty_master, NULL, NULL, &ws);
     if (pid < 0) {
         perror("forkpty");
-        FT_Done_Face(ft_face);
-        FT_Done_FreeType(ft_lib);
-        XCloseDisplay(dpy);
+        cleanup_resources(0);
         return 1;
     }
     if (pid == 0) {
@@ -3529,7 +3602,7 @@ int main(int argc, char *argv[]) {
 
     if (init_framebuffer(win_w, win_h) != 0) {
         fprintf(stderr, "Failed to initialize framebuffer\n");
-        kill(pid, SIGTERM);
+        cleanup_resources(pid);
         return 1;
     }
 
@@ -3627,9 +3700,13 @@ int main(int argc, char *argv[]) {
                 int f_idx = flight_head;
                 if (flight_log[f_idx].data) free(flight_log[f_idx].data);
                 flight_log[f_idx].ts_us = now;
-                flight_log[f_idx].len = n;
                 flight_log[f_idx].data = malloc(n);
-                if (flight_log[f_idx].data) memcpy(flight_log[f_idx].data, buf, n);
+                if (flight_log[f_idx].data) {
+                    flight_log[f_idx].len = n;
+                    memcpy(flight_log[f_idx].data, buf, n);
+                } else {
+                    flight_log[f_idx].len = 0;
+                }
 
                 flight_head = (flight_head + 1) % MAX_FLIGHT_CHUNKS;
                 if (flight_count < MAX_FLIGHT_CHUNKS) flight_count++;
@@ -3668,7 +3745,7 @@ int main(int argc, char *argv[]) {
                 if (r < 0) r = 0;
                 if (r >= rows) r = rows - 1;
 
-                if (mouse_mode && !(ev.xbutton.state & ShiftMask)) {
+                if (mouse_mode != MOUSE_MODE_OFF && !(ev.xbutton.state & ShiftMask)) {
                     int btn = -1;
                     if (ev.xbutton.button == Button1) btn = 0;
                     else if (ev.xbutton.button == Button2) btn = 1;
@@ -3743,8 +3820,8 @@ int main(int argc, char *argv[]) {
                 if (r < 0) r = 0;
                 if (r >= rows) r = rows - 1;
 
-                if (mouse_mode && !(ev.xmotion.state & ShiftMask)) {
-                    if (mouse_mode == 1002 && !(ev.xmotion.state & (Button1Mask | Button2Mask | Button3Mask))) {
+                if (mouse_mode != MOUSE_MODE_OFF && !(ev.xmotion.state & ShiftMask)) {
+                    if (mouse_mode == MOUSE_MODE_BUTTON_EVENT && !(ev.xmotion.state & (Button1Mask | Button2Mask | Button3Mask))) {
                         continue;
                     }
                     int btn = 32;
@@ -3783,7 +3860,7 @@ int main(int argc, char *argv[]) {
                 if (r < 0) r = 0;
                 if (r >= rows) r = rows - 1;
 
-                if (mouse_mode && !(ev.xbutton.state & ShiftMask)) {
+                if (mouse_mode != MOUSE_MODE_OFF && !(ev.xbutton.state & ShiftMask)) {
                     int btn = -1;
                     if (ev.xbutton.button == Button1) btn = 0;
                     else if (ev.xbutton.button == Button2) btn = 1;
@@ -3868,38 +3945,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    destroy_framebuffer();
-    XFreeGC(dpy, gc);
-    XDestroyWindow(dpy, win);
-    XCloseDisplay(dpy);
-    close(pty_master);
-    if (child_alive) {
-        kill(pid, SIGTERM);
-        waitpid(pid, NULL, 0);
-    }
-
-    for (int i = 0; i < MAX_HIST_LINES; i++) {
-        if (history[i]) free(history[i]);
-    }
-    for (int i = 0; i < MAX_FLIGHT_CHUNKS; i++) {
-        if (flight_log[i].data) free(flight_log[i].data);
-    }
-    free(live_term.primary_grid);
-    free(live_term.alt_grid);
-    free(replay_term.primary_grid);
-    free(replay_term.alt_grid);
-    free(dirty);
-    free(sel_text);
-    clear_glyph_cache();
-    for (int i = 0; i < num_fallback_faces; i++) {
-        if (fallback_faces[i]) {
-            FT_Done_Face(fallback_faces[i]);
-            fallback_faces[i] = NULL;
-        }
-    }
-    num_fallback_faces = 0;
-    FT_Done_Face(ft_face);
-    FT_Done_FreeType(ft_lib);
-
+    cleanup_resources(child_alive ? pid : 0);
     return 0;
 }
