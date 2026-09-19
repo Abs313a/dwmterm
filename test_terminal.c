@@ -1208,6 +1208,335 @@ static void test_keybind_config_and_super_mod(void) {
     TEST_PASS();
 }
 
+static void test_decstbm_margins(void) {
+    tests_run++;
+    Terminal term;
+    term_init(&term, 80, 24);
+
+    assert(term.top_margin == 0);
+    assert(term.bottom_margin == 23);
+
+    // Set valid margins 5..20 (1-indexed -> 4..19 0-indexed)
+    term.cursor_x = 10;
+    term.cursor_y = 15;
+    feed_bytes(&term, "\x1b[5;20r");
+    assert(term.top_margin == 4);
+    assert(term.bottom_margin == 19);
+    // DECSTBM homes cursor to (0, 0)
+    assert(term.cursor_x == 0);
+    assert(term.cursor_y == 0);
+
+    // Set margins with no params -> reset to full screen
+    feed_bytes(&term, "\x1b[r");
+    assert(term.top_margin == 0);
+    assert(term.bottom_margin == 23);
+
+    // Invalid margins: top >= bottom
+    feed_bytes(&term, "\x1b[20;5r");
+    assert(term.top_margin == 0);
+    assert(term.bottom_margin == 23);
+
+    feed_bytes(&term, "\x1b[10;10r");
+    assert(term.top_margin == 0);
+    assert(term.bottom_margin == 23);
+
+    // Out of bounds: bottom > rows
+    feed_bytes(&term, "\x1b[1;50r");
+    assert(term.top_margin == 0);
+    assert(term.bottom_margin == 23);
+
+    // Reset via term_reset
+    term.top_margin = 2;
+    term.bottom_margin = 10;
+    term_reset(&term);
+    assert(term.top_margin == 0);
+    assert(term.bottom_margin == 23);
+
+    free(term.primary_grid);
+    free(term.alt_grid);
+    TEST_PASS();
+}
+
+static void test_csi_scroll_up_down_margins(void) {
+    tests_run++;
+    Terminal term;
+    term_init(&term, 80, 10);
+
+    // Fill rows 0..9 with row identifiers
+    for (int r = 0; r < 10; r++) {
+        for (int c = 0; c < 80; c++) {
+            term.grid[r * 80 + c] = (Cell){(uint32_t)('0' + r), COLOR_FG, COLOR_BG, 0};
+        }
+    }
+
+    // Set margins to rows 2..5 (1-based -> 0-based rows 1..4)
+    feed_bytes(&term, "\x1b[2;5r");
+    assert(term.top_margin == 1);
+    assert(term.bottom_margin == 4);
+
+    // Scroll down 1 line (SD: \x1b[1T or \x1b[T)
+    feed_bytes(&term, "\x1b[T");
+    // Row 0 ('0') must be untouched
+    assert(term.grid[0 * 80 + 0].codepoint == '0');
+    // Row 1 should now be vacated (space)
+    assert(term.grid[1 * 80 + 0].codepoint == ' ');
+    // Rows 2..4 should have shifted down from old 1..3 ('1', '2', '3')
+    assert(term.grid[2 * 80 + 0].codepoint == '1');
+    assert(term.grid[3 * 80 + 0].codepoint == '2');
+    assert(term.grid[4 * 80 + 0].codepoint == '3');
+    // Rows 5..9 ('5'..'9') must be untouched
+    assert(term.grid[5 * 80 + 0].codepoint == '5');
+    assert(term.grid[6 * 80 + 0].codepoint == '6');
+    assert(term.grid[9 * 80 + 0].codepoint == '9');
+
+    // Scroll up 1 line (SU: \x1b[1S or \x1b[S)
+    feed_bytes(&term, "\x1b[S");
+    assert(term.grid[0 * 80 + 0].codepoint == '0');
+    // Row 1 should now have '1'
+    assert(term.grid[1 * 80 + 0].codepoint == '1');
+    assert(term.grid[2 * 80 + 0].codepoint == '2');
+    assert(term.grid[3 * 80 + 0].codepoint == '3');
+    // Row 4 should be vacated (space)
+    assert(term.grid[4 * 80 + 0].codepoint == ' ');
+    // Rows 5..9 untouched
+    assert(term.grid[5 * 80 + 0].codepoint == '5');
+
+    // Test multi-line scroll down (SD 2 lines: \x1b[2T)
+    feed_bytes(&term, "\x1b[2T");
+    assert(term.grid[0 * 80 + 0].codepoint == '0');
+    assert(term.grid[1 * 80 + 0].codepoint == ' ');
+    assert(term.grid[2 * 80 + 0].codepoint == ' ');
+    assert(term.grid[3 * 80 + 0].codepoint == '1');
+    assert(term.grid[4 * 80 + 0].codepoint == '2');
+    assert(term.grid[5 * 80 + 0].codepoint == '5');
+
+    // Test bounded Reverse Index at top margin
+    term.cursor_y = 1; // at top margin
+    term.cursor_x = 0;
+    feed_bytes(&term, "\x1bM");
+    // Should scroll down within margins: line 1 vacated
+    assert(term.cursor_y == 1);
+    assert(term.grid[1 * 80 + 0].codepoint == ' ');
+    assert(term.grid[2 * 80 + 0].codepoint == ' ');
+    assert(term.grid[3 * 80 + 0].codepoint == ' ');
+    assert(term.grid[4 * 80 + 0].codepoint == '1');
+    assert(term.grid[0 * 80 + 0].codepoint == '0');
+    assert(term.grid[5 * 80 + 0].codepoint == '5');
+
+    // Test bounded Linefeed at bottom margin
+    term.cursor_y = 4; // at bottom margin
+    term.cursor_x = 0;
+    term.grid[4 * 80 + 0].codepoint = 'X';
+    feed_bytes(&term, "\n");
+    // Cursor stays at bottom margin, region scrolls up
+    assert(term.cursor_y == 4);
+    assert(term.grid[3 * 80 + 0].codepoint == 'X');
+    assert(term.grid[4 * 80 + 0].codepoint == ' ');
+    assert(term.grid[0 * 80 + 0].codepoint == '0');
+    assert(term.grid[5 * 80 + 0].codepoint == '5');
+
+    free(term.primary_grid);
+    free(term.alt_grid);
+    TEST_PASS();
+}
+
+static void test_bounded_margin_scroll_and_pinned_footer(void) {
+    tests_run++;
+    Terminal term;
+    term_init(&term, 80, 40);
+
+    // Emulate TUI applications with fixed footer/prompt:
+    // Rows 0..34: scrollable history text
+    for (int r = 0; r <= 34; r++) {
+        char buf[32];
+        int len = snprintf(buf, sizeof(buf), "History line %d", r);
+        for (int c = 0; c < len; c++) {
+            term.grid[r * 80 + c] = (Cell){(uint32_t)buf[c], COLOR_FG, COLOR_BG, 0};
+        }
+    }
+    // Rows 35..39: pinned status / prompt
+    const char *prompt_str = "Prompt: > test command";
+    for (size_t c = 0; c < strlen(prompt_str); c++) {
+        term.grid[35 * 80 + c] = (Cell){(uint32_t)prompt_str[c], COLOR_FG, COLOR_BG, 0};
+    }
+    const char *status_str = "Status: active session";
+    for (size_t c = 0; c < strlen(status_str); c++) {
+        term.grid[39 * 80 + c] = (Cell){(uint32_t)status_str[c], COLOR_FG, COLOR_BG, 0};
+    }
+
+    // Execute scroll up escape sequence within margin:
+    // \x1b[1;35r (margins 1..35)
+    // \x1b[H     (cursor home)
+    // \x1b[2T    (scroll down 2 lines)
+    // \x1b[1;40r (reset margins to 1..40)
+    feed_bytes(&term, "\x1b[1;35r\x1b[H\x1b[2T\x1b[1;40r");
+
+    // Assert rows 0 and 1 are empty
+    for (int c = 0; c < 80; c++) {
+        assert(term.grid[0 * 80 + c].codepoint == ' ');
+        assert(term.grid[1 * 80 + c].codepoint == ' ');
+    }
+
+    // Assert row 2 now has old row 0 ("History line 0")
+    assert(term.grid[2 * 80 + 0].codepoint == 'H');
+    assert(term.grid[2 * 80 + 13].codepoint == '0');
+
+    // Assert pinned prompt at row 35 and status at row 39 were 100% UNTOUCHED!
+    for (size_t c = 0; c < strlen(prompt_str); c++) {
+        assert(term.grid[35 * 80 + c].codepoint == (uint32_t)prompt_str[c]);
+    }
+    for (size_t c = 0; c < strlen(status_str); c++) {
+        assert(term.grid[39 * 80 + c].codepoint == (uint32_t)status_str[c]);
+    }
+
+    // Print new history line into row 1
+    feed_bytes(&term, "\x1b[1;1HNew history line");
+    assert(term.grid[0 * 80 + 0].codepoint == 'N');
+    assert(term.grid[0 * 80 + 15].codepoint == 'e');
+    // Ensure no tail corruption remains in row 0
+    assert(term.grid[0 * 80 + 16].codepoint == ' ');
+
+    free(term.primary_grid);
+    free(term.alt_grid);
+    TEST_PASS();
+}
+
+static void test_private_csi_does_not_set_underline(void) {
+    tests_run++;
+    Terminal term;
+    term_init(&term, 80, 24);
+
+    // Normal SGR 4 should set underline
+    feed_bytes(&term, "\x1b[4m");
+    assert(term.cur_flags & FLAG_UNDERLINE);
+
+    // SGR 24 clears underline
+    feed_bytes(&term, "\x1b[24m");
+    assert(!(term.cur_flags & FLAG_UNDERLINE));
+
+    // Private sequences ending in m (e.g. modifyOtherKeys \x1b[>4m or \x1b[?4m) must NOT set underline
+    feed_bytes(&term, "\x1b[>4m");
+    assert(!(term.cur_flags & FLAG_UNDERLINE));
+
+    feed_bytes(&term, "\x1b[?4m");
+    assert(!(term.cur_flags & FLAG_UNDERLINE));
+
+    feed_bytes(&term, "\x1b[<4m");
+    assert(!(term.cur_flags & FLAG_UNDERLINE));
+
+    feed_bytes(&term, "\x1b[=4m");
+    assert(!(term.cur_flags & FLAG_UNDERLINE));
+
+    free(term.primary_grid);
+    free(term.alt_grid);
+    TEST_PASS();
+}
+
+static void test_double_click_word_selection(void) {
+    tests_run++;
+    Terminal term;
+    term_init(&term, 80, 24);
+
+    live_term = term;
+    cols = 80;
+    rows = 24;
+
+    const char *cmd = "git --work-tree=/home/user/workspace/repo   status";
+    for (size_t i = 0; i < strlen(cmd); i++) {
+        term.grid[i] = (Cell){(uint32_t)cmd[i], COLOR_FG, COLOR_BG, 0};
+    }
+    live_term.grid = term.grid;
+
+    // Double-click in the middle of "--work-tree=..." (index 10)
+    select_word_at(0, 10);
+
+    // Word should start at index 4 and end at index 40
+    assert(sel_start_r == 0);
+    assert(sel_end_r == 0);
+    assert(sel_start_c == 4);
+    assert(sel_end_c == 40);
+    assert(sel_text != NULL);
+    assert(strcmp(sel_text, "--work-tree=/home/user/workspace/repo") == 0);
+
+    // Select "git" at index 1
+    select_word_at(0, 1);
+    assert(sel_start_c == 0);
+    assert(sel_end_c == 2);
+    assert(strcmp(sel_text, "git") == 0);
+
+    // Select full line
+    select_line_at(0);
+    assert(sel_start_c == 0);
+    assert(sel_end_c == 79);
+    assert(sel_text != NULL);
+    assert(strcmp(sel_text, cmd) == 0);
+
+    free(term.primary_grid);
+    free(term.alt_grid);
+    TEST_PASS();
+}
+
+static void test_modifier_keypress_preserves_selection(void) {
+    tests_run++;
+    Terminal term;
+    term_init(&term, 80, 24);
+
+    live_term = term;
+    cols = 80;
+    rows = 24;
+
+    const char *sample = "echo hello world";
+    for (size_t i = 0; i < strlen(sample); i++) {
+        term.grid[i] = (Cell){(uint32_t)sample[i], COLOR_FG, COLOR_BG, 0};
+    }
+    live_term.grid = term.grid;
+
+    // Select "hello" (cols 5..9)
+    select_word_at(0, 7);
+    assert(sel_start_r == 0 && sel_end_r == 0);
+    assert(sel_start_c == 5 && sel_end_c == 9);
+    assert(sel_text != NULL);
+    assert(strcmp(sel_text, "hello") == 0);
+
+    // 1. Standalone modifier keys should NOT clear selection coordinates or sel_text
+    KeySym mods[] = {
+        XK_Super_L, XK_Super_R,
+        XK_Shift_L, XK_Shift_R,
+        XK_Control_L, XK_Control_R,
+        XK_Alt_L, XK_Alt_R,
+        XK_Scroll_Lock, XK_Caps_Lock, XK_Num_Lock
+    };
+    for (size_t i = 0; i < sizeof(mods) / sizeof(mods[0]); i++) {
+        assert(is_modifier_keysym(mods[i]) == 1);
+        handle_key_press_event(mods[i], 0, "", 0);
+        assert(sel_start_r == 0 && sel_end_r == 0);
+        assert(sel_start_c == 5 && sel_end_c == 9);
+        assert(sel_text != NULL);
+        assert(strcmp(sel_text, "hello") == 0);
+    }
+
+    // 2. Shortcut combo Super+c (match_keybinding -> ACTION_COPY) must also preserve selection
+    init_default_keybindings();
+    super_mod_mask = Mod4Mask;
+    handle_key_press_event(XK_c, super_mod_mask, "", 0);
+    assert(sel_start_r == 0 && sel_end_r == 0);
+    assert(sel_start_c == 5 && sel_end_c == 9);
+    assert(sel_text != NULL);
+    assert(strcmp(sel_text, "hello") == 0);
+
+    // 3. Typing an actual character (e.g. 'a') MUST clear the selection
+    handle_key_press_event(XK_a, 0, "a", 1);
+    assert(sel_start_r == -1);
+    assert(sel_start_c == -1);
+    assert(sel_end_r == -1);
+    assert(sel_end_c == -1);
+    assert(sel_active == 0);
+
+    free(term.primary_grid);
+    free(term.alt_grid);
+    TEST_PASS();
+}
+
 int main(void) {
     setlocale(LC_ALL, "");
     printf("====================================================\n");
@@ -1247,6 +1576,12 @@ int main(void) {
     test_cursor_config_parsing();
     test_clean_mask_and_csi_u_keybindings();
     test_keybind_config_and_super_mod();
+    test_decstbm_margins();
+    test_csi_scroll_up_down_margins();
+    test_bounded_margin_scroll_and_pinned_footer();
+    test_private_csi_does_not_set_underline();
+    test_double_click_word_selection();
+    test_modifier_keypress_preserves_selection();
 
     printf("====================================================\n");
     printf("All %d/%d tests passed successfully!\n", tests_passed, tests_run);
